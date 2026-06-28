@@ -76,7 +76,7 @@ else
 fi
 
 # .claude/ directory — merge individual files rather than replacing wholesale
-mkdir -p .claude/hooks .claude/skills
+mkdir -p .claude/hooks agents/skills
 
 # .claude/settings.json
 if [ ! -e .claude/settings.json ] || [ -L .claude/settings.json ]; then
@@ -101,12 +101,12 @@ else
   echo "[sky] .claude/hooks/session-start.sh exists and is not a symlink — skipping"
 fi
 
-# .claude/skills/auto-fix/
-if [ ! -e .claude/skills/auto-fix ] || [ -L .claude/skills/auto-fix ]; then
-  mkdir -p .claude/skills
-  symlink_force "../../sky/.claude/skills/auto-fix" ".claude/skills/auto-fix"
+# agents/skills/auto-fix/
+if [ ! -e agents/skills/auto-fix ] || [ -L agents/skills/auto-fix ]; then
+  mkdir -p agents/skills
+  symlink_force "../../sky/agents/skills/auto-fix" "agents/skills/auto-fix"
 else
-  echo "[sky] .claude/skills/auto-fix exists and is not a symlink — skipping"
+  echo "[sky] agents/skills/auto-fix exists and is not a symlink — skipping"
 fi
 
 # ── .envrc ───────────────────────────────────────────────────────────────────
