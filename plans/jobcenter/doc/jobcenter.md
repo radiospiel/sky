@@ -25,16 +25,16 @@ Terminology:
 - **job** — an individual step in a workflow.
 - **a resolved job** — a job that reached its final result: success (`ok`), failure (`failed`), or `timeout`.
 
-The canonical example is Fibonacci. In Jobcenter it is a typed workflow: its request is a protobuf message and its result is a plain `int64`, so awaited children compose directly with `a + b` (see [Golang SDK](#golang-sdk) for how value results work):
+The canonical example is Fibonacci. In Jobcenter it is a typed workflow whose argument and result are both a plain `int64` — no wrapper message needed for simple inputs — so awaited children compose directly with `a + b` (see [Golang SDK](#golang-sdk) for how value arguments and results work):
 
 ```go
 var Fibonacci = jobcenter.NewWorkflow("Fibonacci", "1.0",
-    func(ctx *jobcenter.WfContext, req *pb.FibReq) (int64, error) {
-        if req.N <= 2 {
+    func(ctx *jobcenter.WfContext, n int64) (int64, error) {
+        if n <= 2 {
             return 1, nil
         }
-        f1 := jobcenter.Async(ctx, Fibonacci, &pb.FibReq{N: req.N - 2})
-        f2 := jobcenter.Async(ctx, Fibonacci, &pb.FibReq{N: req.N - 1})
+        f1 := jobcenter.Async(ctx, Fibonacci, n-2)
+        f2 := jobcenter.Async(ctx, Fibonacci, n-1)
         a := f1.Await(ctx)
         b := f2.Await(ctx)
         return a + b, nil
@@ -45,7 +45,7 @@ To run it:
 
 ```
 # register/enqueue and run, all from the CLI
-jobcenter enqueue Fibonacci '{"n":3}'
+jobcenter enqueue Fibonacci 3
 jobcenter run:all
 ```
 
@@ -330,7 +330,9 @@ func NewWorkflow[Req, Resp any](name, version string, fn func(*WfContext, Req) (
 func Register[Req, Resp any](wf *Workflow[Req, Resp])
 ```
 
-`Req` and `Resp` may each be **either a protobuf message or a plain Go value** (a scalar, slice, struct, …). The SDK serializes them through a codec: proto messages are stored directly, while plain values are wrapped in proto well-known types (`Int64Value`, `StringValue`, `Struct`, …) — so the persisted `args_proto`/`result_proto` are always protobuf, and the cross-language wire format is preserved. The payoff is ergonomics: a workflow can declare `Resp = int64`, and `Await` returns an `int64`, so callers write `a + b` rather than unwrapping `a.Value + b.Value`. Use a hand-written proto message when the payload is structured; use a plain value when it is a scalar or a simple shape. Registration records the name, version, and options in the `registry` table.
+`Req` and `Resp` may each be **either a protobuf message or a plain Go value** (a scalar, slice, struct, …). The SDK serializes them through a codec: proto messages are stored directly, while plain values are wrapped in proto well-known types (`Int64Value`, `StringValue`, `Struct`, …) — so the persisted `args_proto`/`result_proto` are always protobuf, and the cross-language wire format is preserved. The payoff is ergonomics on both sides: a workflow can declare `Req = int64` and take `n int64` directly (callers write `Async(ctx, Fibonacci, n-2)` instead of building a `&pb.FibReq{N: n-2}`), and declare `Resp = int64` so `Await` returns an `int64` (callers write `a + b`, not `a.Value + b.Value`). Use a hand-written proto message when the payload is structured; use a plain value when it is a scalar or simple shape.
+
+For a request that *is* a proto message with **exactly one field**, the codec also accepts that field's scalar directly — so a single-field message and a bare value are interchangeable at the call site, and a workflow can migrate from a scalar argument to a richer message without breaking callers that still pass the scalar. Registration records the name, version, and options in the `registry` table.
 
 ### Spawning and awaiting children
 
@@ -397,7 +399,7 @@ Non-runner code uses the typed client:
 
 ```go
 client, _ := jobcenter.Dial(os.Getenv("DATABASE_URL")) // or an HTTP endpoint
-id, _ := jobcenter.Enqueue(ctx, client, Fibonacci, &pb.FibReq{N: 10},
+id, _ := jobcenter.Enqueue(ctx, client, Fibonacci, int64(10),
     jobcenter.WithQueue("default"), jobcenter.WithTags(map[string]string{"owner_id": "42"}))
 
 result, err := jobcenter.AwaitJob[int64](ctx, client, id, 30*time.Second)
@@ -411,7 +413,7 @@ The same operations are available over HTTP for clients that are not written in 
 func TestFibonacci(t *testing.T) {
     h := jobcentertest.New(t)        // in-memory store, deterministic replay, fast mode
     h.Register(Fibonacci)
-    result := jobcentertest.RunToCompletion[int64](h, Fibonacci, &pb.FibReq{N: 10})
+    result := jobcentertest.RunToCompletion[int64](h, Fibonacci, int64(10))
     require.EqualValues(t, 55, result)
 }
 ```
