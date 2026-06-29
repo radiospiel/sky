@@ -360,6 +360,8 @@ func Await(ctx *WfContext, sel Selector) error // Selector == All
 
 This keeps workflow bodies linear — `a := f1.Await(ctx); b := f2.Await(ctx); return a + b` — with no error checks after every call. A workflow reports its *own* failure through the `(Resp, error)` return of its `Fn`; a child's failure propagates automatically via the panic (a workflow that wants to handle one can `recover`, but that is rare). The panic/recover machinery is entirely hidden inside the engine; workflow authors only need to remember the replay footguns above (no once-only `defer`, no host-local state across `Await`).
 
+This does imply a limitation: propagating a child failure by unwinding `Await` requires the host language to **have** exceptions/panics. A host language without them would instead need an async primitive whose failure aborts execution at the await point. In Go (and any exception-capable host) the SDK handles this for you; it only matters for future non-Go SDKs.
+
 ### Protobuf, codegen, and JSON-schema validation
 
 - **One source of truth.** A `buf`/protoc plugin reads a proto `service` definition and generates both the typed workflow stub *and* the HTTP handler, so the wire contract and the Go API never drift.

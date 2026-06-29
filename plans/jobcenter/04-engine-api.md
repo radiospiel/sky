@@ -77,9 +77,18 @@ func (r *Runner) execute(ctx *WfContext, j *store.Job) (status, payload, err) {
 }
 ```
 
-`Await` panics with `pendingSignal` when a child is unresolved. The public `(Resp, error)` return is reserved for **real** workflow errors, which the runner classifies as recoverable (`err`, retried with backoff) or non-recoverable (`failed`) — mirroring `on_exception`/`should_retry?` in `runner.rb`. The panic/recover is fully hidden inside the engine.
+`Await` returns the child's result directly (no error tuple) and **panics** in two cases, both recovered by the runner: `pendingSignal` when the child is unresolved, and the child's error when it resolved as `failed`/`timeout`. The runner classifies a real failure as recoverable (`err`, retried with backoff) or non-recoverable (`failed`). A workflow reports its *own* failure via the `(Resp, error)` return of its `Fn`. The panic/recover is fully hidden inside the engine.
 
 *Alternative considered:* thread an explicit `ErrPending` through every call. It avoids panic but forces `if err == ErrPending { return }` after every `Await`, making workflow bodies noisy and easy to get wrong. Rejected. (Flagged as an open decision in [06-roadmap.md](06-roadmap.md).)
+
+### Limitation: failure propagation relies on host-language exceptions
+
+Because a `failed`/`timeout` child surfaces by **panicking out of `Await`** (carrying the child's error), aborting the workflow at that point depends on the host language having exceptions/panics. Two consequences:
+
+- In Go — and any host language with exceptions — the SDK handles this transparently via `recover`: workflow authors write linear code, and a child failure aborts execution at the `Await` call site automatically.
+- A host language **without** exceptions cannot abort mid-function this way. There, the model needs an async primitive whose failure short-circuits execution at the await point (an `Await` the runtime treats as a checkpoint), rather than a thrown error.
+
+This is a limitation to keep in mind for future non-Go SDKs (see [host-language neutrality](README.md)); within an exception/panic-capable host it is fully handled by the SDK, not by workflow authors.
 
 ## Orchestration (moved from PL/pgSQL to Go)
 
