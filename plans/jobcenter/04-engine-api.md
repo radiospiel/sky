@@ -45,45 +45,71 @@ var Fibonacci = &Workflow[*pb.FibReq, *pb.FibResp]{
 
 The body reads linearly, exactly like the Ruby original.
 
+## Worker and server: who does what
+
+Two processes cooperate:
+
+- The **worker** (runner) hosts the workflow code and executes the `Fn`. It holds no orchestration state and never touches the database.
+- The **server** owns the engine: the durable job state, child find-or-create, memoization, suspend/resume, and all scheduling. It is the only thing that talks to the store (this reimplements `runner.rb`'s bookkeeping + `find_or_create_childjob`).
+
+Every in-workflow primitive the `Fn` calls (`Async`, `Await`, `Asleep`, `Alog`, …) is a **ConnectRPC call to the server**. The worker is deliberately thin.
+
 ## Replay & memoization (the core)
 
-This reimplements `runner.rb` + `find_or_create_childjob` in Go. On each wake-up the runner re-executes the workflow's `Fn` **from the top**. `Async`/`Await` resolve children by `(parent_id, args_hash)` via `store.FindChildJob`:
+On each attempt the worker re-executes the workflow's `Fn` **from the top**. The primitives drive the server:
 
-- **child resolved** → decode `result_proto` and return it (memoized);
-- **child missing** → `store.EnqueueJob` to create it, then signal pending;
-- **child present but unresolved** → signal pending.
+- `Async(child)` → RPC: the server find-or-creates a child keyed by `(parent_id, args_hash)` and returns a handle. `args_hash` is a stable hash over `(workflow, method, args)`, so identical invocations memoize to the same row.
+- `Await(handle)` → RPC: the server resolves the child and replies with one of
+  - **resolved** (`ok`) → the decoded `result_proto` (memoized);
+  - **failed/timeout** → the child's error;
+  - **pending** → not resolved yet.
 
-When pending is signalled the runner sets the current job to `sleep` and returns; the job re-runs later (woken by a child completing or by polling), and previously resolved `Await`s now return their cached values — so the function resumes where it left off. `await :all` is supported by checking `store.ChildJobs(parentID)` for any unresolved child.
-
-`args_hash` is a stable hash over `(workflow, method, args)` so identical child invocations memoize to the same row (Ruby keyed on the full `args` JSON).
+On *pending*, the worker stops executing this attempt and acks. The server has the child recorded and reschedules the parent when the child completes; a worker (any worker) then re-runs the `Fn` from the top, and the now-resolved `Await`s return their memoized results from the server until execution reaches the new frontier — so the function resumes where it left off. `await :all` is one RPC the server answers by checking the parent's children for any unresolved one.
 
 ## Control flow: the pending signal
 
-**Decision (recommended): `panic(pendingSignal)` recovered by the runner.**
-
-Ruby uses `throw :pending`. The Go equivalent that keeps workflow bodies linear is an internal panic with a sentinel value, recovered in the runner:
+**Decision (recommended): `panic(pendingSignal)` recovered by the worker.** The unwinding has to happen where the `Fn` runs — on the worker — so this is worker-side, even though the *decision* (resolved/failed/pending) comes from the server:
 
 ```go
-func (r *Runner) execute(ctx *WfContext, j *store.Job) (status, payload, err) {
+// in the worker: run one attempt of a job's Fn
+func (w *Worker) execute(ctx *WfContext, j *Job) (outcome, error) {
     defer func() {
         if v := recover(); v == pendingSignal {
-            status = StatusSleep // not an error: just suspended
+            // server said a child is pending; just stop this attempt
         } else if v != nil {
             panic(v) // real panic: propagate
         }
     }()
-    resp, err := r.registry.invoke(ctx, j) // may panic(pendingSignal)
-    ...
+    return w.registry.invoke(ctx, j) // may panic(pendingSignal) from inside Await
+}
+
+// Await: one RPC to the server, translated into a value or an unwind
+func (f *Future[Resp]) Await(ctx *WfContext) Resp {
+    r := ctx.server.ResolveChild(ctx, f.handle) // ConnectRPC
+    switch r.State {
+    case Resolved: return decode[Resp](r.Result)
+    case Failed:   panic(childError{r.Error})   // recovered → job fails
+    default:       panic(pendingSignal)          // recovered → attempt suspends
+    }
 }
 ```
 
-`Await` panics with `pendingSignal` when a child is unresolved. The public `(Resp, error)` return is reserved for **real** workflow errors, which the runner classifies as recoverable (`err`, retried with backoff) or non-recoverable (`failed`) — mirroring `on_exception`/`should_retry?` in `runner.rb`. The panic/recover is fully hidden inside the engine.
+`Await` returns the child's result directly (no error tuple) and **panics** in the two non-success cases. The server classifies a real failure as recoverable (`err`, retried with backoff) or non-recoverable (`failed`); a workflow reports its *own* failure via the `(Resp, error)` return of its `Fn`. The panic/recover is hidden inside the worker SDK.
 
 *Alternative considered:* thread an explicit `ErrPending` through every call. It avoids panic but forces `if err == ErrPending { return }` after every `Await`, making workflow bodies noisy and easy to get wrong. Rejected. (Flagged as an open decision in [06-roadmap.md](06-roadmap.md).)
 
+### Limitation: failure propagation relies on host-language exceptions
+
+Because a `failed`/`timeout` child surfaces by **panicking out of `Await`** (carrying the child's error), aborting the workflow at that point depends on the host language having exceptions/panics. Two consequences:
+
+- In Go — and any host language with exceptions — the SDK handles this transparently via `recover`: workflow authors write linear code, and a child failure aborts execution at the `Await` call site automatically.
+- A host language **without** exceptions cannot abort mid-function this way. There, the model needs an async primitive whose failure short-circuits execution at the await point (an `Await` the runtime treats as a checkpoint), rather than a thrown error.
+
+This is a limitation to keep in mind for future non-Go SDKs (see [host-language neutrality](README.md)); within an exception/panic-capable host it is fully handled by the SDK, not by workflow authors.
+
 ## Orchestration (moved from PL/pgSQL to Go)
 
-Run by the runner's after-completion hook and a maintenance loop (single-flighted across workers via a Postgres advisory lock):
+Run server-side by an after-completion hook and a maintenance loop (single-flighted across server nodes via a Postgres advisory lock):
 
 - **Timeouts** — scan `timing_out_at`, mark `timeout`, rerun with backoff (`_process_timedout_jobs` / `_set_job_timeout`).
 - **Backoff** — `base * 1.5^failed_attempts`, `base` smaller in fast/test mode (`_initiate_rerun_on_error`).

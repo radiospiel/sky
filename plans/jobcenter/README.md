@@ -27,19 +27,22 @@ From the directional revision:
 5. **Orchestration logic leaves the database.** Replay, child memoization, timeouts, cron, sticky/greedy policy, cleanup, zombie detection and restart all move into Go. We do **not** port the big SQL functions.
 6. **The DB provides exactly two special capabilities:** (a) notifications (LISTEN/NOTIFY with a polling fallback) and (b) atomically claiming the next matching job. Everything else is plain CRUD + transactions.
 7. **Split the tables:** authoritative proto payloads on a lean, hot job table; the JSON projection used for searching lives in a separate table.
-8. **Idiomatic Go API:** typed `Workflow[Req,Resp]` values with `Future[Resp]` instead of stringly-typed calls, plus optional **codegen from proto** so workflow stubs and the HTTP service share one source of truth.
+8. **Idiomatic Go API:** typed `Workflow[Req,Resp]` values with `Future[Resp]` instead of stringly-typed calls, plus optional **codegen from proto** so workflow stubs and the ConnectRPC server share one source of truth.
 
 ## Architecture at a glance
 
 ```
- cmd/jobcenter (CLI)        api/http (HTTP service)
-            \                  /
-             v                v
-        ┌──────────────────────────┐
-        │  engine (orchestration)  │   replay, memoization, futures,
-        │  registry, runner,       │   timeouts, cron, sticky/greedy,
-        │  scheduler/maintenance   │   backoff, zombie, restart
-        └──────────────────────────┘
+ runners (Go SDK / other langs)      clients & CLI
+            \                            /
+             \   ConnectRPC API         /
+              \  (protobuf + JSON)     /
+               v                      v
+        ┌──────────────────────────────────┐
+        │  server (api/)                    │
+        │  engine (orchestration)          │   scheduling/claim, memoization,
+        │  registry, scheduler/maintenance │   timeouts, cron, sticky/greedy,
+        │                                  │   backoff, zombie, restart
+        └──────────────────────────────────┘
                      │  Store interface
                      v
         ┌───────────────────────────┐
@@ -47,6 +50,8 @@ From the directional revision:
         │  store/postgres            │  Notifier (LISTEN/NOTIFY + poll)
         └───────────────────────────┘
 ```
+
+Workers execute workflow code (replay) in-process but hold no orchestration state: every `Async`/`Await` is a ConnectRPC call to the server, and only the server touches the database.
 
 Hard rule: **all business/orchestration logic lives in Go**; the store only does CRUD, transactions, atomic claim, and wake-ups.
 
