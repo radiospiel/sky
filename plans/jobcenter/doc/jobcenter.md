@@ -6,7 +6,7 @@ Jobcenter is a Go reimplementation of [`postjob`](https://github.com/mediafellow
 
 ## What is Jobcenter
 
-On a basic level Jobcenter acts as a job queue, but — like postjob — it is much more, offering the features of a workflow engine with deep integration into a host language (here, Go).
+On a basic level Jobcenter acts as a job queue, but — like postjob — it is much more, offering the features of a workflow engine with deep integration into a host language. **Jobcenter is not limited to Go: Go is simply the first host language.** The engine, the replay model, the protobuf payload format, and the HTTP runner interface are all language-agnostic; a runner in any language only needs to speak the runner interface and exchange proto payloads, so additional host-language SDKs (e.g. Elixir, Ruby) can be added later. Go is the first such SDK, and the rest of this document uses it for examples.
 
 ### Jobcenter as a job queue
 
@@ -111,7 +111,7 @@ To inspect the current state of the queues. This reads the **search projection**
 
 #### The "runner interface"
 
-To enqueue or check out jobs, register runners, and report results. A Go runner uses the Jobcenter SDK, which calls a small, well-defined set of `Store` methods (notably `FetchNextJob`). Runners and workflows never touch the database any other way. Because the same operations are also exposed over HTTP, runners written in other languages — or running where a direct database connection is undesirable — can drive Jobcenter over HTTP.
+To enqueue or check out jobs, register runners, and report results. A Go runner uses the Jobcenter SDK, which calls a small, well-defined set of `Store` methods (notably `FetchNextJob`). Runners and workflows never touch the database any other way. Because the same operations are also exposed over HTTP, **non-Go runners are first-class**: a runner written in any language (or running where a direct database connection is undesirable) drives Jobcenter over the HTTP runner interface, exchanging protobuf payloads. The Go SDK is the most integrated path today, but it is not the only one — the runner interface is the contract, and host-language SDKs are layered on top of it.
 
 ## The Jobcenter components
 
@@ -313,7 +313,7 @@ Workflows can be defined inside a host application so they have direct access to
 
 ## Golang SDK
 
-This section explains how we integrate workflows in Go — the central developer-facing change from the Ruby implementation. The goal is a typed, idiomatic API where workflow code, persisted payloads, and the HTTP surface all share one source of truth: **protobuf**.
+This section explains how we integrate workflows in Go — the **first** host-language SDK, not the only one. Jobcenter's engine and runner interface are language-neutral (see [What is Jobcenter](#what-is-jobcenter)); the Go SDK is simply the first and most integrated binding, and others can follow the same pattern over the runner interface. The goal is a typed, idiomatic API where workflow code, persisted payloads, and the HTTP surface all share one source of truth: **protobuf** — which is also what keeps the model portable across host languages.
 
 ### Defining a workflow
 
