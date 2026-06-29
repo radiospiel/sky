@@ -25,19 +25,19 @@ Terminology:
 - **job** — an individual step in a workflow.
 - **a resolved job** — a job that reached its final result: success (`ok`), failure (`failed`), or `timeout`.
 
-The canonical example is Fibonacci. In Jobcenter it is a typed workflow keyed to protobuf request/response messages (see [Golang SDK](#golang-sdk) for the full API):
+The canonical example is Fibonacci. In Jobcenter it is a typed workflow: its request is a protobuf message and its result is a plain `int64`, so awaited children compose directly with `a + b` (see [Golang SDK](#golang-sdk) for how value results work):
 
 ```go
 var Fibonacci = jobcenter.NewWorkflow("Fibonacci", "1.0",
-    func(ctx *jobcenter.WfContext, req *pb.FibReq) (*pb.FibResp, error) {
+    func(ctx *jobcenter.WfContext, req *pb.FibReq) (int64, error) {
         if req.N <= 2 {
-            return &pb.FibResp{Value: 1}, nil
+            return 1, nil
         }
         f1 := jobcenter.Async(ctx, Fibonacci, &pb.FibReq{N: req.N - 2})
         f2 := jobcenter.Async(ctx, Fibonacci, &pb.FibReq{N: req.N - 1})
         a, _ := f1.Await(ctx)
         b, _ := f2.Await(ctx)
-        return &pb.FibResp{Value: a.Value + b.Value}, nil
+        return a + b, nil
     })
 ```
 
@@ -317,32 +317,32 @@ This section explains how we integrate workflows in Go — the **first** host-la
 
 ### Defining a workflow
 
-A workflow is a typed value parameterized by a protobuf request and response message:
+A workflow is a typed value parameterized by a request and a response type:
 
 ```go
-type Workflow[Req, Resp proto.Message] struct {
+type Workflow[Req, Resp any] struct {
     Name, Version string
     Options       Options // queue, timeout, max_attempts, sticky, greedy, cron, resurrect, json_schema
     Fn            func(ctx *WfContext, req Req) (Resp, error)
 }
 
-func NewWorkflow[Req, Resp proto.Message](name, version string, fn func(*WfContext, Req) (Resp, error), opts ...Option) *Workflow[Req, Resp]
-func Register[Req, Resp proto.Message](wf *Workflow[Req, Resp])
+func NewWorkflow[Req, Resp any](name, version string, fn func(*WfContext, Req) (Resp, error), opts ...Option) *Workflow[Req, Resp]
+func Register[Req, Resp any](wf *Workflow[Req, Resp])
 ```
 
-`Req`/`Resp` are generated from `.proto` definitions. Their serialized bytes are the authoritative `args_proto`/`result_proto` stored in the `jobs` table. Registration records the name, version, and options in the `registry` table.
+`Req` and `Resp` may each be **either a protobuf message or a plain Go value** (a scalar, slice, struct, …). The SDK serializes them through a codec: proto messages are stored directly, while plain values are wrapped in proto well-known types (`Int64Value`, `StringValue`, `Struct`, …) — so the persisted `args_proto`/`result_proto` are always protobuf, and the cross-language wire format is preserved. The payoff is ergonomics: a workflow can declare `Resp = int64`, and `Await` returns an `int64`, so callers write `a + b` rather than unwrapping `a.Value + b.Value`. Use a hand-written proto message when the payload is structured; use a plain value when it is a scalar or a simple shape. Registration records the name, version, and options in the `registry` table.
 
 ### Spawning and awaiting children
 
 ```go
 // start a child, get a typed future back (does not block)
-func Async[Req, Resp proto.Message](ctx *WfContext, wf *Workflow[Req, Resp], req Req, opts ...Opt) *Future[Resp]
+func Async[Req, Resp any](ctx *WfContext, wf *Workflow[Req, Resp], req Req, opts ...Opt) *Future[Resp]
 
 // resolve a future: returns the memoized result, or suspends the job
 func (f *Future[Resp]) Await(ctx *WfContext) (Resp, error)
 
 // convenience: Async then Await
-func Call[Req, Resp proto.Message](ctx *WfContext, wf *Workflow[Req, Resp], req Req, opts ...Opt) (Resp, error)
+func Call[Req, Resp any](ctx *WfContext, wf *Workflow[Req, Resp], req Req, opts ...Opt) (Resp, error)
 
 // wait for every outstanding child before collecting results
 func Await(ctx *WfContext, sel Selector) error // Selector == All
@@ -392,7 +392,7 @@ client, _ := jobcenter.Dial(os.Getenv("DATABASE_URL")) // or an HTTP endpoint
 id, _ := jobcenter.Enqueue(ctx, client, Fibonacci, &pb.FibReq{N: 10},
     jobcenter.WithQueue("default"), jobcenter.WithTags(map[string]string{"owner_id": "42"}))
 
-resp, err := jobcenter.AwaitJob[*pb.FibResp](ctx, client, id, 30*time.Second)
+result, err := jobcenter.AwaitJob[int64](ctx, client, id, 30*time.Second)
 ```
 
 The same operations are available over HTTP for clients that are not written in Go.
@@ -403,8 +403,8 @@ The same operations are available over HTTP for clients that are not written in 
 func TestFibonacci(t *testing.T) {
     h := jobcentertest.New(t)        // in-memory store, deterministic replay, fast mode
     h.Register(Fibonacci)
-    resp := jobcentertest.RunToCompletion[*pb.FibResp](h, Fibonacci, &pb.FibReq{N: 10})
-    require.EqualValues(t, 55, resp.Value)
+    result := jobcentertest.RunToCompletion[int64](h, Fibonacci, &pb.FibReq{N: 10})
+    require.EqualValues(t, 55, result)
 }
 ```
 
