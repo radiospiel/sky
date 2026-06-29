@@ -14,7 +14,7 @@ At its simplest, a runner connects to Jobcenter, checks out a job that is ready 
 
 ### Jobcenter as a workflow engine
 
-A workflow in Jobcenter is a program, and it supports the control-flow primitives that are typical for synchronous programs — loops, conditionals, error handling — to orchestrate multiple steps that may individually fail or that coordinate external systems. Unlike a classic workflow engine built from *decider* and *activity* nodes, Jobcenter expresses control flow directly in the host language. The engine makes that code durable and restartable through replay.
+A workflow in Jobcenter is a program, and it supports the control-flow primitives that are typical for synchronous programs — loops, conditionals, error handling — to orchestrate multiple steps that may individually fail or that coordinate external systems. Unlike a classic workflow engine built from *decider* and *activity* nodes (as in AWS SWF), or one that distinguishes between *workflows* (which handle the logic) and *activities* (which do the real work), Jobcenter expresses control flow directly in the host language. The engine makes that code durable and restartable through replay.
 
 ## A working workflow
 
