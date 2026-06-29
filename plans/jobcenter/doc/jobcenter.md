@@ -27,16 +27,16 @@ Terminology:
 - **job** — an individual step in a workflow.
 - **a resolved job** — a job that reached its final result: success (`ok`), failure (`failed`), or `timeout`.
 
-The canonical example is Fibonacci. In Jobcenter it is a typed workflow whose argument and result are both a plain `int64` — no wrapper message needed for simple inputs — so awaited children compose directly with `a + b` (see [Golang SDK](#golang-sdk) for how value arguments and results work):
+The canonical example is Fibonacci. In Jobcenter it is a typed workflow whose argument and result are both a plain `int64` — no wrapper message needed for simple inputs — so awaited children compose directly with `a + b` (see [Golang SDK](#golang-sdk) for how value arguments and results work). The examples import the package under the alias `jc` (`import jc "github.com/radiospiel/jobcenter"`):
 
 ```go
-var Fibonacci = jobcenter.NewWorkflow("Fibonacci", "1.0",
-    func(ctx *jobcenter.WfContext, n int64) (int64, error) {
+var Fibonacci = jc.NewWorkflow("Fibonacci", "1.0",
+    func(ctx *jc.WfContext, n int64) (int64, error) {
         if n <= 2 {
             return 1, nil
         }
-        f1 := jobcenter.Async(ctx, Fibonacci, n-2)
-        f2 := jobcenter.Async(ctx, Fibonacci, n-1)
+        f1 := jc.Async(ctx, Fibonacci, n-2)
+        f2 := jc.Async(ctx, Fibonacci, n-1)
         a := f1.Await(ctx)
         b := f2.Await(ctx)
         return a + b, nil
@@ -380,14 +380,19 @@ The SDK exposes the DSL primitives described above as functions on `*WfContext`:
 A runner is a small `main` that registers workflows and starts the engine:
 
 ```go
+import (
+    jc "github.com/radiospiel/jobcenter"
+    "github.com/radiospiel/jobcenter/store/postgres"
+)
+
 func main() {
     st, _ := postgres.Open(os.Getenv("DATABASE_URL"))
-    eng := jobcenter.NewEngine(st)
+    eng := jc.NewEngine(st)
 
-    jobcenter.Register(Fibonacci)
+    jc.Register(Fibonacci)
     // … register the rest of this runner's workflows
 
-    eng.Run(context.Background(), jobcenter.RunOptions{
+    eng.Run(context.Background(), jc.RunOptions{
         Queues: []string{"default"}, // omit to serve all known queues
     })
 }
@@ -400,11 +405,11 @@ func main() {
 Non-runner code uses the typed client:
 
 ```go
-client, _ := jobcenter.Dial(os.Getenv("DATABASE_URL")) // or an HTTP endpoint
-id, _ := jobcenter.Enqueue(ctx, client, Fibonacci, int64(10),
-    jobcenter.WithQueue("default"), jobcenter.WithTags(map[string]string{"owner_id": "42"}))
+client, _ := jc.Dial(os.Getenv("DATABASE_URL")) // or an HTTP endpoint
+id, _ := jc.Enqueue(ctx, client, Fibonacci, int64(10),
+    jc.WithQueue("default"), jc.WithTags(map[string]string{"owner_id": "42"}))
 
-result, err := jobcenter.AwaitJob[int64](ctx, client, id, 30*time.Second)
+result, err := jc.AwaitJob[int64](ctx, client, id, 30*time.Second)
 ```
 
 The same operations are available over HTTP for clients that are not written in Go.
