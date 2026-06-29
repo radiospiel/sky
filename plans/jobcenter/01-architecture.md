@@ -13,21 +13,20 @@ DB-agnostic persistence. Exposes plain CRUD + transactions, plus exactly two "sp
 
 No business logic, no PL/pgSQL orchestration functions. See [03-store-interface.md](03-store-interface.md).
 
-### 2. Engine (`engine/`)
+### 2. Engine (`engine/`) — server-side
 
-All orchestration:
+All orchestration state, running inside the server:
 
-- **Registry** of typed workflows (name + version → handler + options).
-- **Runner**: the worker loop — wait for work, claim a job, execute, persist.
-- **Replay & memoization**: re-run the workflow body from the top, resolving child jobs from cache (the core of postjob).
-- **Futures**: typed `Future[Resp]` returned by `Async`, awaited later.
-- **Scheduler / maintenance**: timeouts, exponential backoff, cron re-enqueue, sticky/greedy routing, zombie detection, restart/resurrect, post-processing.
+- **Registry** of typed workflows (name + version → options).
+- **Job lifecycle & memoization**: handle each `Async`/`Await` RPC from a worker — find-or-create a child keyed by `(parent_id, args_hash)`, return a resolved result, or report pending; persist all of it.
+- **Scheduler / maintenance**: claim (`FetchNextJob`), timeouts, exponential backoff, cron re-enqueue, sticky/greedy routing, zombie detection, restart/resurrect, post-processing.
 
-See [04-engine-api.md](04-engine-api.md).
+The **worker** (see Edges) is the counterpart: it executes the workflow `Fn` (replay = re-running it from the top) and turns every primitive into an RPC to this engine. Replay *runs* on the worker; the durable replay *state* lives here. See [04-engine-api.md](04-engine-api.md).
 
 ### 3. Edges (`api/`, `cmd/jobcenter/`)
 
-- **Server (ConnectRPC)** — the engine + store run inside a server that exposes a [ConnectRPC](https://connectrpc.com) API (protobuf and JSON). This server is the **mandatory connection point**: every runner and client talks to it, and it is the only component that touches the database. Runners execute workflow code (replay) locally and exchange jobs/results with the server; they never open a DB connection.
+- **Server (ConnectRPC)** — the engine + store run inside a server that exposes a [ConnectRPC](https://connectrpc.com) API (protobuf and JSON). This server is the **mandatory connection point**: every worker and client talks to it, and it is the only component that touches the database.
+- **Worker** — built from the Go SDK; hosts the workflow code and executes the `Fn`, issuing a ConnectRPC call to the server for every `Async`/`Await`/`Asleep`/`Alog`. It holds no orchestration state and never opens a DB connection.
 - **CLI** covering the existing verbs (`serve`, `run`, `enqueue`, `await`, `ps`, `registry`, `job:*`, `cron`, `db:migrate`, `hosts`, `sessions`, `events`). All but `serve`/`db:*` are ConnectRPC clients of a server.
 
 See [05-http-and-cli.md](05-http-and-cli.md).

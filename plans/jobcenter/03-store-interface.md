@@ -1,6 +1,6 @@
 # 03 — Store interface
 
-The store is the only thing that touches the database. It offers plain CRUD + transactions, plus the two special capabilities from principle 6. Databases are switchable behind this interface (principle 4); Postgres is the preferred backend.
+The store is the only thing that touches the database, and it is used **only by the server's engine** — workers and clients reach all of this through the ConnectRPC API, never the store directly. It offers plain CRUD + transactions, plus the two special capabilities from principle 6. Databases are switchable behind this interface (principle 4); Postgres is the preferred backend.
 
 ## The interface
 
@@ -91,9 +91,9 @@ RETURNING jobs.*;
 
 ### Notifications
 
-- **Wake on new work:** after committing an enqueue or a transition into `ready`/`err`, Go calls `Notifier.Notify(ctx, "jobs", queue)`. Workers `LISTEN` on `"jobs"` and filter by their queues. (Ruby used DB triggers `_wakeup_runners`; Jobcenter issues the `NOTIFY` from Go, so the DB has no trigger logic.)
-- **Wake on completion:** `Await`/HTTP long-poll listen on a per-job channel `jobs_completed_<id>`; Go notifies it after a job reaches a terminal status.
-- **Polling fallback:** `NextDeadline` runs `SELECT min(...) FROM (next_run_at of runnable; timing_out_at of unresolved)`; the worker waits until then if no notification arrives (replaces `time_to_next_job`).
+- **Wake on new work:** after committing an enqueue or a transition into `ready`/`err`, the server calls `Notifier.Notify(ctx, "jobs", queue)`. The server `LISTEN`s on `"jobs"` and hands work to whichever worker is waiting on a checkout RPC for that queue. (Ruby used DB triggers `_wakeup_runners`; Jobcenter issues the `NOTIFY` from Go, so the DB has no trigger logic.)
+- **Wake on completion:** the server listens on a per-job channel `jobs_completed_<id>` to satisfy an outstanding `Await`/long-poll after a job reaches a terminal status.
+- **Polling fallback:** `NextDeadline` runs `SELECT min(...) FROM (next_run_at of runnable; timing_out_at of unresolved)`; the server waits until then if no notification arrives (replaces `time_to_next_job`).
 
 ### Transactions & the projection
 
@@ -104,6 +104,6 @@ RETURNING jobs.*;
 A backend that cannot do `LISTEN/NOTIFY` (e.g. SQLite, MySQL) still satisfies the interface:
 
 - `FetchNextJob`: same select-lock-mark pattern using that engine's row-locking (`FOR UPDATE`, or `BEGIN IMMEDIATE` for SQLite).
-- `Notifier`: `Notify` is a no-op; `Listen` returns a channel that never fires; workers rely entirely on `NextDeadline` polling.
+- `Notifier`: `Notify` is a no-op; `Listen` returns a channel that never fires; the server relies entirely on `NextDeadline` polling.
 
 This keeps Postgres fully-featured while letting a minimal backend exist for tests or small deployments — proving the abstraction holds.

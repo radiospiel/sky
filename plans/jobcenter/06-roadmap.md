@@ -33,8 +33,8 @@
 
 | Ruby source | Jobcenter location |
 | --- | --- |
-| `runner.rb` (replay, await, on_exception) | `engine/runner.go`, `engine/replay.go` |
-| `find_or_create_childjob`, `008a_childjobs.sql` | `engine` + `store.FindChildJob` |
+| `runner.rb` (replay, await, on_exception) | worker SDK (executes `Fn`, panic/recover) + server `engine` (resolve/suspend) |
+| `find_or_create_childjob`, `008a_childjobs.sql` | server `engine` + `store.FindChildJob` (worker reaches it via the `Async`/`Await` RPC) |
 | `checkout`, `_upcoming_runnable_job` (`013a`) | `store.FetchNextJob` + `ClaimFilter` |
 | `notifications.rb`, `005_helpers.sql` triggers | `store/postgres` `Notifier` (NOTIFY from Go) |
 | `_process_timedout_jobs`, `_set_job_timeout` | `engine/maintenance.go` (timeouts) |

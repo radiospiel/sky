@@ -51,7 +51,7 @@ From the directional revision:
         └───────────────────────────┘
 ```
 
-Runners execute workflow code (replay) in-process and exchange jobs/results with the server over the ConnectRPC API; only the server touches the database.
+Workers execute workflow code (replay) in-process but hold no orchestration state: every `Async`/`Await` is a ConnectRPC call to the server, and only the server touches the database.
 
 Hard rule: **all business/orchestration logic lives in Go**; the store only does CRUD, transactions, atomic claim, and wake-ups.
 

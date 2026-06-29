@@ -101,7 +101,7 @@ Behind that API, the server owns the orchestration engine and the store. Job dat
 1. **Atomic claim** of the next runnable job (`FetchNextJob`).
 2. **Notifications** — `LISTEN`/`NOTIFY` with a polling fallback.
 
-Everything else the database does is plain CRUD inside transactions. All scheduling, memoization bookkeeping, timeouts, retries, cron, sticky/greedy routing, zombie handling, and restart live in the server's Go engine; **replay — re-executing the workflow code — runs in the runner**, which is where the workflow functions live. PostgreSQL remains the default because of its mature, type-safe networking layer, its rich query support (making all job data flexibly searchable), and `LISTEN`/`NOTIFY`. But because the database is dumb, the backend is **switchable** (see [Store interface](../03-store-interface.md)).
+Everything else the database does is plain CRUD inside transactions. All orchestration state lives in the server's Go engine: scheduling/claim, child find-or-create and memoization, suspend/resume, timeouts, retries, cron, sticky/greedy routing, zombie handling, and restart. The **worker only executes workflow code** — it re-runs the workflow function (this is replay), and every primitive that function calls (`Async`, `Await`, …) is a ConnectRPC call to the server. The worker holds no orchestration state and never reaches the database. PostgreSQL remains the default because of its mature, type-safe networking layer, its rich query support (making all job data flexibly searchable), and `LISTEN`/`NOTIFY`. But because the database is dumb, the backend is **switchable** (see [Store interface](../03-store-interface.md)).
 
 ### Interacting with the Jobcenter server
 
@@ -113,7 +113,7 @@ To inspect the current state of the queues: status of a job, listing/searching j
 
 #### The "runner interface"
 
-To register runners, check out jobs, resolve child jobs, and report results. **A runner always connects to the server over the ConnectRPC API** — it never opens a database connection. A Go runner uses the Jobcenter SDK, which is a ConnectRPC client; a runner in any language uses the same endpoints with protobuf or JSON. Because the contract is the API (not a database schema), host-language SDKs are simply thin clients over it — the Go SDK is the first and most integrated, not a privileged one.
+To register runners, check out jobs, spawn and resolve child jobs, and report results. **A runner always connects to the server over the ConnectRPC API** — it never opens a database connection, and it holds no orchestration state. It runs the workflow function and, on each `Async`/`Await`/`Asleep`/`Alog`, makes a call to the server, which does the actual orchestration (find-or-create child, return a resolved result, or tell the worker to suspend). A Go runner uses the Jobcenter SDK, which turns those primitives into ConnectRPC calls; a runner in any language uses the same endpoints with protobuf or JSON. Because the contract is the API (not a database schema), host-language SDKs are simply thin clients over it — the Go SDK is the first and most integrated, not a privileged one.
 
 ## The Jobcenter components
 
@@ -354,16 +354,16 @@ func Call[Req, Resp any](ctx *WfContext, wf *Workflow[Req, Resp], req Req, opts 
 func Await(ctx *WfContext, sel Selector) error // Selector == All
 ```
 
-`Async`/`Await` look up the child by `(parent_id, args_hash)`. A resolved child returns its decoded result (memoized); a missing child is enqueued; an unresolved child suspends the parent (pending signal); a `failed`/`timeout` child panics with its error.
+Each of these is a **ConnectRPC call to the server** — the worker keeps no orchestration state. `Async` asks the server to find-or-create a child keyed by `(parent_id, args_hash)` and returns a handle. `Await` asks the server to resolve that child; the server replies with one of: the decoded result (the child is `ok` — memoized), a failure (the child `failed`/timed out), or *pending* (not resolved yet). The server owns the memoization records, child creation, and the suspend/resume bookkeeping; the worker just turns the reply into a value, a panic, or a suspension.
 
 ### Control flow: the pending signal
 
-`Await` never returns an error — it returns the child's result directly and **panics** in the two non-success cases, both of which the runner recovers:
+`Await` never returns an error — it returns the child's result directly and **panics** in the two non-success cases, which the runner recovers locally (this unwinding has to happen where the workflow function runs — i.e. in the worker):
 
-- **pending** — the child isn't resolved yet; the runner sets the job to `sleep` and re-runs it later.
-- **child failure** — the child resolved as `failed`/`timeout`; the panic carries the child's error, and the runner fails the current job (classifying recoverable `err`, retried with backoff, vs non-recoverable `failed`).
+- **pending** — the server says the child isn't resolved; the worker stops executing this attempt and acks. The server has already recorded the child and will reschedule the parent once it completes; a worker then re-runs the function from the top, and the now-resolved `Await`s return their memoized results from the server until execution reaches the new frontier.
+- **child failure** — the server reports the child `failed`/`timeout`; the panic carries that error, and the job fails (the server classifies recoverable `err`, retried with backoff, vs non-recoverable `failed`).
 
-This keeps workflow bodies linear — `a := f1.Await(ctx); b := f2.Await(ctx); return a + b` — with no error checks after every call. A workflow reports its *own* failure through the `(Resp, error)` return of its `Fn`; a child's failure propagates automatically via the panic (a workflow that wants to handle one can `recover`, but that is rare). The panic/recover machinery is entirely hidden inside the engine; workflow authors only need to remember the replay footguns above (no once-only `defer`, no host-local state across `Await`).
+This keeps workflow bodies linear — `a := f1.Await(ctx); b := f2.Await(ctx); return a + b` — with no error checks after every call. A workflow reports its *own* failure through the `(Resp, error)` return of its `Fn`; a child's failure propagates automatically via the panic (a workflow that wants to handle one can `recover`, but that is rare). The panic/recover machinery is hidden inside the worker SDK; workflow authors only need to remember the replay footguns above (no once-only `defer`, no host-local state across `Await`).
 
 This does imply a limitation: propagating a child failure by unwinding `Await` requires the host language to **have** exceptions/panics. A host language without them would instead need an async primitive whose failure aborts execution at the await point. In Go (and any exception-capable host) the SDK handles this for you; it only matters for future non-Go SDKs.
 
@@ -374,7 +374,7 @@ This does imply a limitation: propagating a child failure by unwinding `Await` r
 
 ### The in-workflow primitives
 
-The SDK exposes the DSL primitives described above as functions on `*WfContext`: `Async`, `Await`, `Asleep`, `Alog`, `UpdateProgress`, plus the `CurrentWorkflow`/`CurrentContext`/`CurrentArgs` accessors and `Track!` for cross-workflow tracking.
+The SDK exposes the DSL primitives as functions on `*WfContext`: `Async`, `Await`, `Asleep`, `Alog`, `UpdateProgress`, plus the `CurrentWorkflow`/`CurrentContext`/`CurrentArgs` accessors and `Track!` for cross-workflow tracking. Each is a thin wrapper that issues a ConnectRPC call to the server and returns (or unwinds); none of them touch a database or hold state on the worker.
 
 ### Running a worker
 
@@ -395,7 +395,7 @@ func main() {
 }
 ```
 
-The worker loop: wait for work (server push or polling) → check out a job over the API → execute the workflow code (replay) → report the result. Scheduling and the `FetchNextJob` claim happen server-side; the runner only executes workflow code and exchanges jobs/results. `RunOptions` covers `--count`, `--queue`, and fast mode for tests. (The server itself is started separately: `jobcenter serve --database-url=…`.)
+The worker loop: ask the server for a job → run the workflow function, issuing an RPC to the server for every `Async`/`Await`/`Asleep`/`Alog` it hits → report the outcome. All orchestration (the `FetchNextJob` claim, child find-or-create, memoization, suspend/resume) happens server-side; the worker only executes workflow code. `RunOptions` covers `--count`, `--queue`, and fast mode for tests. (The server itself is started separately: `jobcenter serve --database-url=…`.)
 
 ### Enqueuing and awaiting from clients
 
