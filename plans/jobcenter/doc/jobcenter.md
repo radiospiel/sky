@@ -23,7 +23,7 @@ Terminology:
 - **workflow implementation** — code that describes the steps of a business process.
 - **workflow instance** — a running instance, created by *enqueuing* the workflow.
 - **job** — an individual step in a workflow.
-- **resolving a job** — a job that reached its final result: success (`ok`), failure (`failed`), or `timeout`.
+- **a resolved job** — a job that reached its final result: success (`ok`), failure (`failed`), or `timeout`.
 
 The canonical example is Fibonacci. In Jobcenter it is a typed workflow keyed to protobuf request/response messages (see [Golang SDK](#golang-sdk) for the full API):
 
