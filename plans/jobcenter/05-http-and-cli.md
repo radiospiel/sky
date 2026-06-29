@@ -1,13 +1,10 @@
 # 05 — HTTP interface & CLI
 
-Jobcenter keeps the existing operational surface so current callers and operators
-feel at home. The HTTP contract mirrors `lib/postjob/queue/interface.rb` and the
-JC endpoints documented in `doc/book.md`; the CLI mirrors `lib/postjob/cli/`.
+Jobcenter keeps the existing operational surface so current callers and operators feel at home. The HTTP contract mirrors `lib/postjob/queue/interface.rb` and the JC endpoints documented in `doc/book.md`; the CLI mirrors `lib/postjob/cli/`.
 
 ## HTTP service (`api/http`)
 
-The core gem had no built-in HTTP server — it defined an abstract interface
-(`interface.rb`) and the JC app exposed it over HTTP. Jobcenter ships that server.
+The core gem had no built-in HTTP server — it defined an abstract interface (`interface.rb`) and the JC app exposed it over HTTP. Jobcenter ships that server.
 
 ### Client / workflow endpoints
 
@@ -22,8 +19,7 @@ The core gem had no built-in HTTP server — it defined an abstract interface
 | `POST /jobs/{id}/restart` | `session_restart_job` | Restart a failed/timed-out/resolved root job. |
 | `POST /jobs/{id}/progress` | `update_progress` | Report `completed_steps`/`total_steps`/`eta`. |
 
-`resolve` bodies follow the existing shape: `{value: …}` on success or
-`{error, error_message, error_backtrace}` on failure.
+`resolve` bodies follow the existing shape: `{value: …}` on success or `{error, error_message, error_backtrace}` on failure.
 
 ### Runner / session endpoints (for remote workers)
 
@@ -39,24 +35,19 @@ For workers that don't talk to the DB directly — they drive the engine over HT
 | `GET /sessions/{id}/wait` | `session_wait_for_job` (notify + poll) |
 | `POST /sessions/{id}/jobs/{id}/resolve` | `resolve_job` |
 
-The HTTP handlers are generated from proto service definitions alongside the
-workflow stubs (see [04-engine-api.md](04-engine-api.md)), so the wire contract
-and the typed workflow API share one source of truth.
+The HTTP handlers are generated from proto service definitions alongside the workflow stubs (see [04-engine-api.md](04-engine-api.md)), so the wire contract and the typed workflow API share one source of truth.
 
 ## CLI (`cmd/jobcenter`)
 
 Covers the verbs in `lib/postjob/cli/`:
 
 - **Run:** `run [--queue …] [--count N] [--fast]`, `run:all`, `run:one`.
-- **Enqueue:** `enqueue <Workflow> [args] [--queue --tags --timeout --sticky
-  --greedy --run-in --count]`, `await <Workflow> [args] [--timeout]`.
-- **Inspect:** `ps`, `ps:failed`, `ps:full`, `ps:result`, `ps:show`, `ps:stats`,
-  `logs`, `events`, `top`.
+- **Enqueue:** `enqueue <Workflow> [args] [--queue --tags --timeout --sticky --greedy --run-in --count]`, `await <Workflow> [args] [--timeout]`.
+- **Inspect:** `ps`, `ps:failed`, `ps:full`, `ps:result`, `ps:show`, `ps:stats`, `logs`, `events`, `top`.
 - **Jobs:** `job:resolve`, `job:restart`, `job:kill`, `job:await`, `job:force`.
 - **Cron:** `cron`, `cron:enqueue --cron=N`, `cron:disable`.
 - **Registry:** `registry`, `registry:local`, `registry:show`.
 - **DB:** `db:migrate`, `db:remigrate`, `db:drop`.
 - **Infra:** `hosts`, `host:shutdown`, `sessions`, `version`.
 
-Read paths (`ps`, `registry`) query the `job_search` projection; mutating paths go
-through the engine so orchestration stays in one place.
+Read paths (`ps`, `registry`) query the `job_search` projection; mutating paths go through the engine so orchestration stays in one place.

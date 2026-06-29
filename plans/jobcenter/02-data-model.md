@@ -1,12 +1,8 @@
 # 02 — Data model
 
-The Ruby implementation keeps everything on one wide `postjob.postjobs` table
-(`lib/postjob/queue/postgres/migrations/003_postjobs.sql`, `doc/structure.sql`):
-job spec, scheduling state, JSON `args`/`results`, error backtrace, and a `tags`
-JSONB column with GIN + expression indexes for searching.
+The Ruby implementation keeps everything on one wide `postjob.postjobs` table (`lib/postjob/queue/postgres/migrations/003_postjobs.sql`, `doc/structure.sql`): job spec, scheduling state, JSON `args`/`results`, error backtrace, and a `tags` JSONB column with GIN + expression indexes for searching.
 
-Jobcenter **splits this in two** (principle 7): a lean hot table holding
-authoritative proto payloads, and a separate projection table for searching.
+Jobcenter **splits this in two** (principle 7): a lean hot table holding authoritative proto payloads, and a separate projection table for searching.
 
 ## `jobs` — lean, hot, authoritative
 
@@ -41,10 +37,7 @@ Only what the claim/scheduler hot path needs. Payloads are protobuf bytes.
 | `error_backtrace_proto` | bytea | |
 | `created_at` / `updated_at` | timestamptz | |
 
-Spec columns (`workflow`, `workflow_method`, `queue`, `max_attempts`, `cron`,
-`is_sticky`, `is_greedy`, `args_proto`, `args_hash`) are immutable after enqueue;
-the rest is mutable scheduling/result state — mirroring the read-only vs mutable
-split in `job.rb`.
+Spec columns (`workflow`, `workflow_method`, `queue`, `max_attempts`, `cron`, `is_sticky`, `is_greedy`, `args_proto`, `args_hash`) are immutable after enqueue; the rest is mutable scheduling/result state — mirroring the read-only vs mutable split in `job.rb`.
 
 ### Indexes (hot path)
 
@@ -55,9 +48,7 @@ split in `job.rb`.
 
 ## `job_search` — projection for queries
 
-Written in the **same transaction** as the `jobs` row, derived from the proto
-payload + caller-supplied tags. Used by `ps`, dashboards and the HTTP search
-endpoint, so search load never touches the hot table.
+Written in the **same transaction** as the `jobs` row, derived from the proto payload + caller-supplied tags. Used by `ps`, dashboards and the HTTP search endpoint, so search load never touches the hot table.
 
 | Column | Type | Notes |
 | --- | --- | --- |
@@ -73,28 +64,21 @@ endpoint, so search load never touches the hot table.
 ### Indexes
 
 - GIN on `tags` (`jsonb_path_ops`) — matches `postjobs_tags_idx`.
-- Expression: `(tags->>'owner_id')`, `(tags->>'affiliation_id')` — match
-  `postjobs_tags_owner_idx` / `postjobs_tags_affiliation_idx`.
+- Expression: `(tags->>'owner_id')`, `(tags->>'affiliation_id')` — match `postjobs_tags_owner_idx` / `postjobs_tags_affiliation_idx`.
 - `(workflow)`, `(queue)`, `(status)`, `(root_id)` as needed for `ps` filters.
 
-Because `job_search` is derived, it can be dropped and rebuilt from `jobs` proto
-payloads if the projection schema changes.
+Because `job_search` is derived, it can be dropped and rebuilt from `jobs` proto payloads if the projection schema changes.
 
 ## Supporting tables (plain CRUD)
 
-Carried over, minimal, **no PL/pgSQL functions** — migrations create tables +
-indexes only:
+Carried over, minimal, **no PL/pgSQL functions** — migrations create tables + indexes only:
 
-- `worker_sessions` — `id`, `host_id`, `workflows[]`, `queues[]`, `status`,
-  `fast_mode`. Read when building a `ClaimFilter`.
-- `hosts` — `id`, `status` (`running/shutdown/stopped`), `heartbeat_at`. Used by
-  the Go zombie scan; **no sentinel-row global lock** (Ruby's `checkout` locked a
-  null-uuid row — Jobcenter relies on `SKIP LOCKED` instead).
+- `worker_sessions` — `id`, `host_id`, `workflows[]`, `queues[]`, `status`, `fast_mode`. Read when building a `ClaimFilter`.
+- `hosts` — `id`, `status` (`running/shutdown/stopped`), `heartbeat_at`. Used by the Go zombie scan; **no sentinel-row global lock** (Ruby's `checkout` locked a null-uuid row — Jobcenter relies on `SKIP LOCKED` instead).
 - `tokens` — external/manual job resolution by token.
 - `xrefs` — `(external_system, xref)` → job, unique.
 - `events` — append-only audit log (`job.*`, `host.*`, `zombie`, heartbeats).
-- `registry` — `workflow`, `version`, `options` JSONB (queue, max_attempts,
-  timeout, sticky, greedy, cron, post_processing, resurrect).
+- `registry` — `workflow`, `version`, `options` JSONB (queue, max_attempts, timeout, sticky, greedy, cron, post_processing, resurrect).
 - `settings` — key/value.
 
 ## Status enum
@@ -110,7 +94,4 @@ resolved   (human-handled terminal state)
 
 ## Migrations
 
-`store/postgres/migrations/` carries plain DDL: the enum, the two job tables, the
-supporting tables, and indexes. Crucially it carries **none** of the orchestration
-functions/triggers from the Ruby `migrations/` tree — that behaviour now lives in
-`engine/`.
+`store/postgres/migrations/` carries plain DDL: the enum, the two job tables, the supporting tables, and indexes. Crucially it carries **none** of the orchestration functions/triggers from the Ruby `migrations/` tree — that behaviour now lives in `engine/`.

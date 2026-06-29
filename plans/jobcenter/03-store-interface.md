@@ -1,8 +1,6 @@
 # 03 — Store interface
 
-The store is the only thing that touches the database. It offers plain CRUD +
-transactions, plus the two special capabilities from principle 6. Databases are
-switchable behind this interface (principle 4); Postgres is the preferred backend.
+The store is the only thing that touches the database. It offers plain CRUD + transactions, plus the two special capabilities from principle 6. Databases are switchable behind this interface (principle 4); Postgres is the preferred backend.
 
 ## The interface
 
@@ -57,9 +55,7 @@ type Notifier interface {
 
 ### Atomic claim
 
-A single query replaces Ruby's `checkout` + `_upcoming_runnable_job`. The
-sticky/greedy **policy** is decided in Go and arrives as `ClaimFilter` fields; the
-SQL is pure mechanism:
+A single query replaces Ruby's `checkout` + `_upcoming_runnable_job`. The sticky/greedy **policy** is decided in Go and arrives as `ClaimFilter` fields; the SQL is pure mechanism:
 
 ```sql
 WITH next AS (
@@ -91,38 +87,23 @@ WHERE jobs.id = next.id
 RETURNING jobs.*;
 ```
 
-`FOR UPDATE SKIP LOCKED` provides concurrency safety without the global sentinel
-lock the Ruby version took on `hosts`.
+`FOR UPDATE SKIP LOCKED` provides concurrency safety without the global sentinel lock the Ruby version took on `hosts`.
 
 ### Notifications
 
-- **Wake on new work:** after committing an enqueue or a transition into
-  `ready`/`err`, Go calls `Notifier.Notify(ctx, "jobs", queue)`. Workers
-  `LISTEN` on `"jobs"` and filter by their queues. (Ruby used DB triggers
-  `_wakeup_runners`; Jobcenter issues the `NOTIFY` from Go, so the DB has no
-  trigger logic.)
-- **Wake on completion:** `Await`/HTTP long-poll listen on a per-job channel
-  `jobs_completed_<id>`; Go notifies it after a job reaches a terminal status.
-- **Polling fallback:** `NextDeadline` runs
-  `SELECT min(...) FROM (next_run_at of runnable; timing_out_at of unresolved)`;
-  the worker waits until then if no notification arrives (replaces
-  `time_to_next_job`).
+- **Wake on new work:** after committing an enqueue or a transition into `ready`/`err`, Go calls `Notifier.Notify(ctx, "jobs", queue)`. Workers `LISTEN` on `"jobs"` and filter by their queues. (Ruby used DB triggers `_wakeup_runners`; Jobcenter issues the `NOTIFY` from Go, so the DB has no trigger logic.)
+- **Wake on completion:** `Await`/HTTP long-poll listen on a per-job channel `jobs_completed_<id>`; Go notifies it after a job reaches a terminal status.
+- **Polling fallback:** `NextDeadline` runs `SELECT min(...) FROM (next_run_at of runnable; timing_out_at of unresolved)`; the worker waits until then if no notification arrives (replaces `time_to_next_job`).
 
 ### Transactions & the projection
 
-`EnqueueJob`/`UpdateJob` write the `jobs` row and the matching `job_search` row in
-the same `WithTx` block, so the projection is always consistent with the
-authoritative payload.
+`EnqueueJob`/`UpdateJob` write the `jobs` row and the matching `job_search` row in the same `WithTx` block, so the projection is always consistent with the authoritative payload.
 
 ## Other databases (switchability)
 
-A backend that cannot do `LISTEN/NOTIFY` (e.g. SQLite, MySQL) still satisfies the
-interface:
+A backend that cannot do `LISTEN/NOTIFY` (e.g. SQLite, MySQL) still satisfies the interface:
 
-- `FetchNextJob`: same select-lock-mark pattern using that engine's row-locking
-  (`FOR UPDATE`, or `BEGIN IMMEDIATE` for SQLite).
-- `Notifier`: `Notify` is a no-op; `Listen` returns a channel that never fires;
-  workers rely entirely on `NextDeadline` polling.
+- `FetchNextJob`: same select-lock-mark pattern using that engine's row-locking (`FOR UPDATE`, or `BEGIN IMMEDIATE` for SQLite).
+- `Notifier`: `Notify` is a no-op; `Listen` returns a channel that never fires; workers rely entirely on `NextDeadline` polling.
 
-This keeps Postgres fully-featured while letting a minimal backend exist for
-tests or small deployments — proving the abstraction holds.
+This keeps Postgres fully-featured while letting a minimal backend exist for tests or small deployments — proving the abstraction holds.

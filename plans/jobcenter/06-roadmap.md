@@ -5,8 +5,7 @@
 1. **Store + schema**
    - Migrations: status enum, `jobs`, `job_search`, supporting tables, indexes.
    - `Store` interface + `Job`/`JobView` models.
-   - `PostgresStore`: `FetchNextJob` (atomic claim), enqueue/CRUD in `WithTx`,
-     `Notifier` (LISTEN/NOTIFY + `NextDeadline` polling).
+   - `PostgresStore`: `FetchNextJob` (atomic claim), enqueue/CRUD in `WithTx`, `Notifier` (LISTEN/NOTIFY + `NextDeadline` polling).
    - *Exit:* enqueue a row, claim it from a second connection, observe a wake-up.
 
 2. **Engine core**
@@ -16,23 +15,19 @@
    - *Exit:* the Fibonacci example computes correctly via replay.
 
 3. **Proto + codegen**
-   - Proto messages + service defs; `buf` plugin generating workflow stubs + HTTP
-     handlers; optional JSON-schema validation hook.
+   - Proto messages + service defs; `buf` plugin generating workflow stubs + HTTP handlers; optional JSON-schema validation hook.
    - *Exit:* a workflow + its HTTP endpoint generated from one `.proto`.
 
 4. **Orchestration**
-   - Timeouts, backoff, cron, sticky/greedy `ClaimFilter`, zombie, restart,
-     post-processing/tracking, maintenance single-flight (advisory lock).
-   - *Exit:* timeout, retry-with-backoff, cron re-enqueue and zombie reclaim all
-     covered by tests.
+   - Timeouts, backoff, cron, sticky/greedy `ClaimFilter`, zombie, restart, post-processing/tracking, maintenance single-flight (advisory lock).
+   - *Exit:* timeout, retry-with-backoff, cron re-enqueue and zombie reclaim all covered by tests.
 
 5. **HTTP API + CLI**
    - Server (client + runner/session endpoints); CLI verbs.
    - *Exit:* enqueue + await + ps over HTTP and CLI against a real Postgres.
 
 6. **Examples + tests**
-   - Typed fibonacci/sum/sleeping_beauty; parity tests vs Ruby semantics; a
-     poll-only non-Postgres store stub proving switchability.
+   - Typed fibonacci/sum/sleeping_beauty; parity tests vs Ruby semantics; a poll-only non-Postgres store stub proving switchability.
 
 ## Ruby → Go parity map
 
@@ -56,17 +51,8 @@
 
 ## Open decisions
 
-- **Pending-signal mechanism** — `panic(pendingSignal)`/recover (recommended, keeps
-  workflow bodies linear) vs explicit `ErrPending` return (noisier). See
-  [04-engine-api.md](04-engine-api.md).
-- **`args_hash` input** — hash canonical JSON of the decoded message (stable
-  across proto field reordering, matches Ruby's args-equality) vs hash raw proto
-  bytes (cheaper but order-sensitive). Leaning canonical JSON.
-- **`visibility` levels & `events` audit log** — preserve the Ruby `visibility`
-  smallint and full event stream in v1, or defer the audit log to a later
-  milestone? Affects `ps` filters and observability.
-- **Remote-worker model** — first-class HTTP-driven workers in v1, or DB-direct
-  workers only with HTTP for clients? Impacts how much of the session/host surface
-  ships in milestone 5.
-- **Greedy semantics** — confirm the Ruby rule (one greedy root per sticky host;
-  `control` queue always allowed through) is exactly what we want, or simplify.
+- **Pending-signal mechanism** — `panic(pendingSignal)`/recover (recommended, keeps workflow bodies linear) vs explicit `ErrPending` return (noisier). See [04-engine-api.md](04-engine-api.md).
+- **`args_hash` input** — hash canonical JSON of the decoded message (stable across proto field reordering, matches Ruby's args-equality) vs hash raw proto bytes (cheaper but order-sensitive). Leaning canonical JSON.
+- **`visibility` levels & `events` audit log** — preserve the Ruby `visibility` smallint and full event stream in v1, or defer the audit log to a later milestone? Affects `ps` filters and observability.
+- **Remote-worker model** — first-class HTTP-driven workers in v1, or DB-direct workers only with HTTP for clients? Impacts how much of the session/host surface ships in milestone 5.
+- **Greedy semantics** — confirm the Ruby rule (one greedy root per sticky host; `control` queue always allowed through) is exactly what we want, or simplify.
