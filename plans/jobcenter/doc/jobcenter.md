@@ -2,6 +2,8 @@
 
 Jobcenter is a restartable, asynchronous, distributed workflow engine: business processes written as ordinary code, made durable by replay. This document describes the features of the Jobcenter service and how applications integrate with it.
 
+A workflow is not a single unit of work but a tree of **multiple, potentially deeply nested jobs**: each step is a job, and a job can spawn further jobs. Where any given job runs is not known up front — the Jobcenter service **orchestrates** the jobs across a pool of **worker nodes**, dispatching each one to whichever worker is available and capable of running it. That pool is not fixed: worker nodes can be added to (or removed from) a running system at any time, and Jobcenter routes work to them as they appear. Because every job's state and result is persisted and execution is resumed by replay, a workflow survives worker restarts, crashes, scale-downs, and redeployments, picking up exactly where it left off. This is what makes Jobcenter a **durable execution engine**.
+
 > **Motivation.** Jobcenter grows out of [`postjob`](https://github.com/mediafellows/postjob), a Ruby + PostgreSQL workflow engine, and keeps its core idea — replay-based orchestration. It differs in two deliberate ways: all orchestration logic lives in the application (starting with Go) rather than in the database, and the database is reduced to two special capabilities plus plain storage. The remainder of this document describes Jobcenter on its own terms. The companion design docs in [`../`](../README.md) cover the architecture, data model, store interface, engine, and roadmap.
 
 ## What is Jobcenter
