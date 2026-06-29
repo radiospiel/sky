@@ -25,10 +25,10 @@ All orchestration:
 
 See [04-engine-api.md](04-engine-api.md).
 
-### 3. Edges (`api/http/`, `cmd/jobcenter/`)
+### 3. Edges (`api/`, `cmd/jobcenter/`)
 
-- **HTTP service** mirroring `lib/postjob/queue/interface.rb` and the documented JC endpoints (enqueue, resolve-by-token/xref, status, await, ps, session/host).
-- **CLI** covering the existing verbs (`run`, `enqueue`, `await`, `ps`, `registry`, `job:*`, `cron`, `db:migrate`, `hosts`, `sessions`, `events`).
+- **Server (ConnectRPC)** — the engine + store run inside a server that exposes a [ConnectRPC](https://connectrpc.com) API (protobuf and JSON). This server is the **mandatory connection point**: every runner and client talks to it, and it is the only component that touches the database. Runners execute workflow code (replay) locally and exchange jobs/results with the server; they never open a DB connection.
+- **CLI** covering the existing verbs (`serve`, `run`, `enqueue`, `await`, `ps`, `registry`, `job:*`, `cron`, `db:migrate`, `hosts`, `sessions`, `events`). All but `serve`/`db:*` are ConnectRPC clients of a server.
 
 See [05-http-and-cli.md](05-http-and-cli.md).
 
@@ -65,7 +65,7 @@ jobcenter/
   engine/           runner, replay, futures, registry, scheduler/maintenance
   store/            Store interface + Job model (DB-agnostic)
   store/postgres/   PostgresStore: FetchNextJob, notifications, migrations
-  api/http/         HTTP server mirroring interface.rb + JC endpoints
+  api/              ConnectRPC server (protobuf + JSON); the runner/client API
   cmd/jobcenter/    CLI
   examples/         typed fibonacci/sum/sleeping_beauty equivalents
 ```

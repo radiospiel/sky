@@ -8,7 +8,7 @@ A workflow is not a single unit of work but a tree of **multiple, potentially de
 
 ## What is Jobcenter
 
-On a basic level Jobcenter acts as a job queue, but it is much more, offering the features of a workflow engine with deep integration into a host language. **Jobcenter is not limited to Go: Go is simply the first host language.** The engine, the replay model, the protobuf payload format, and the HTTP runner interface are all language-agnostic; a runner in any language only needs to speak the runner interface and exchange proto payloads, so additional host-language SDKs (e.g. Elixir, Ruby) can be added later. Go is the first such SDK, and the rest of this document uses it for examples.
+On a basic level Jobcenter acts as a job queue, but it is much more, offering the features of a workflow engine with deep integration into a host language. **Jobcenter is not limited to Go: Go is simply the first host language.** The engine, the replay model, the protobuf payload format, and the server's ConnectRPC API are all language-agnostic; a runner in any language only needs to speak that API (protobuf or JSON), so additional host-language SDKs (e.g. Elixir, Ruby) can be added later. Go is the first such SDK, and the rest of this document uses it for examples.
 
 ### Jobcenter as a job queue
 
@@ -94,35 +94,36 @@ A job can be in one of the following statuses:
 
 ## The Jobcenter server
 
-Jobcenter stores job data in a database (PostgreSQL by default) but keeps all orchestration logic in the application, not the database. This separation — dumb store, smart engine — is the central architectural choice.
+**Every runner and client connects to a Jobcenter server.** The server is the only component that talks to the database; runners never connect to it directly. The server exposes an **HTTP API built with [ConnectRPC](https://connectrpc.com)**, so the same endpoints accept **both protobuf and JSON** payloads (and work with Connect, gRPC, and gRPC-Web clients). A runner checks out work, reports results, and resolves child jobs over this API; a runner in any language can therefore participate.
 
-The database provides **exactly two special capabilities**:
+Behind that API, the server owns the orchestration engine and the store. Job data lives in a database (PostgreSQL by default), but all orchestration logic lives in the server, not the database — the **dumb store, smart engine** split is the central architectural choice. The database provides **exactly two special capabilities**:
 
 1. **Atomic claim** of the next runnable job (`FetchNextJob`).
 2. **Notifications** — `LISTEN`/`NOTIFY` with a polling fallback.
 
-Everything else the database does is plain CRUD inside transactions. All scheduling, replay, memoization, timeouts, retries, cron, sticky/greedy routing, zombie handling, and restart live in the Go engine. PostgreSQL remains the default because of its mature, type-safe networking layer, its rich query support (making all job data flexibly searchable), and `LISTEN`/`NOTIFY`. But because the database is dumb, the backend is **switchable** (see [Store interface](../03-store-interface.md)).
+Everything else the database does is plain CRUD inside transactions. All scheduling, memoization bookkeeping, timeouts, retries, cron, sticky/greedy routing, zombie handling, and restart live in the server's Go engine; **replay — re-executing the workflow code — runs in the runner**, which is where the workflow functions live. PostgreSQL remains the default because of its mature, type-safe networking layer, its rich query support (making all job data flexibly searchable), and `LISTEN`/`NOTIFY`. But because the database is dumb, the backend is **switchable** (see [Store interface](../03-store-interface.md)).
 
 ### Interacting with the Jobcenter server
 
-There are two ways to interact with a Jobcenter server.
+The server's ConnectRPC API serves two kinds of caller.
 
 #### The "inspection interface"
 
-To inspect the current state of the queues. This reads the **search projection** table (see [Data structures](#jobcenter-data-structures)), either directly via SQL or through the HTTP `GET /jobs` endpoint and the `jobcenter ps` CLI. Search load never touches the hot job table.
+To inspect the current state of the queues: status of a job, listing/searching jobs, logs, registry. These are read endpoints (e.g. `GET /jobs`, surfaced by the `jobcenter ps` CLI) backed by the **search projection** table (see [Data structures](#jobcenter-data-structures)), so search load never touches the hot job table. (Operators can also query the database directly, but applications go through the server.)
 
 #### The "runner interface"
 
-To enqueue or check out jobs, register runners, and report results. A Go runner uses the Jobcenter SDK, which calls a small, well-defined set of `Store` methods (notably `FetchNextJob`). Runners and workflows never touch the database any other way. Because the same operations are also exposed over HTTP, **non-Go runners are first-class**: a runner written in any language (or running where a direct database connection is undesirable) drives Jobcenter over the HTTP runner interface, exchanging protobuf payloads. The Go SDK is the most integrated path today, but it is not the only one — the runner interface is the contract, and host-language SDKs are layered on top of it.
+To register runners, check out jobs, resolve child jobs, and report results. **A runner always connects to the server over the ConnectRPC API** — it never opens a database connection. A Go runner uses the Jobcenter SDK, which is a ConnectRPC client; a runner in any language uses the same endpoints with protobuf or JSON. Because the contract is the API (not a database schema), host-language SDKs are simply thin clients over it — the Go SDK is the first and most integrated, not a privileged one.
 
 ## The Jobcenter components
 
 A Jobcenter system consists of:
 
-- a **store** (`store/`, `store/postgres/`) — persistence + the two special capabilities;
-- an **engine** (`engine/`) — all orchestration and the runner loop;
-- a **Go SDK** — typed `Workflow[Req,Resp]` / `Future[Resp]` values and the `async`/`await`/`asleep`/`alog` primitives;
-- an **HTTP service** (`api/http/`) and a **CLI** (`cmd/jobcenter/`).
+- a **server** — the long-running process that owns the engine and the store and exposes the ConnectRPC API (`api/`, `engine/`, `store/`, `store/postgres/`). It is the only component that connects to the database. Run it with `jobcenter serve`.
+- a **store** (`store/`, `store/postgres/`) — persistence + the two special capabilities, used by the server's engine;
+- an **engine** (`engine/`) — orchestration: scheduling/claim, memoization bookkeeping, timeouts, backoff, cron, sticky/greedy, zombie, restart;
+- a **Go SDK** — a ConnectRPC client plus the typed `Workflow[Req,Resp]` / `Future[Resp]` values and the `async`/`await`/`asleep`/`alog` primitives; this is what a runner is built from;
+- a **CLI** (`cmd/jobcenter/`) — `serve` plus the operator commands (see [The Jobcenter CLI](#the-jobcenter-cli)).
 
 ### Database migrations
 
@@ -137,7 +138,7 @@ The schema is versioned; `jobcenter version` prints both the binary's version an
 
 ### Building a runner
 
-A runner is a Go program that imports the Jobcenter SDK, registers its workflows, points at a database (via `DATABASE_URL` or a config file), and starts the engine. See [Golang SDK](#golang-sdk) for the full walkthrough.
+A runner is a Go program that imports the Jobcenter SDK, registers its workflows, connects to a server (via `JOBCENTER_URL`), and runs the worker loop. It never connects to the database — that is the server's job. See [Golang SDK](#golang-sdk) for the full walkthrough.
 
 ## The Workflow SDK
 
@@ -368,7 +369,7 @@ This does imply a limitation: propagating a child failure by unwinding `Await` r
 
 ### Protobuf, codegen, and JSON-schema validation
 
-- **One source of truth.** A `buf`/protoc plugin reads a proto `service` definition and generates both the typed workflow stub *and* the HTTP handler, so the wire contract and the Go API never drift.
+- **One source of truth.** A `buf`/protoc plugin reads a proto `service` definition and generates both the typed workflow stub *and* the ConnectRPC handler, so the wire contract and the Go API never drift. Because the transport is ConnectRPC, those endpoints serve protobuf and JSON over the same routes.
 - **Optional JSON-schema validation.** A workflow may declare a JSON schema (sidecar file or embedded); the schema is stored in the registry so every participant can validate a payload before enqueue and before result storage, even without the implementation — an extra layer on top of proto's structural typing.
 
 ### The in-workflow primitives
@@ -377,42 +378,38 @@ The SDK exposes the DSL primitives described above as functions on `*WfContext`:
 
 ### Running a worker
 
-A runner is a small `main` that registers workflows and starts the engine:
+A runner is a small `main` that registers workflows, connects to a server, and runs the worker loop. It takes a server URL — **not** a database URL; the database sits behind the server:
 
 ```go
-import (
-    jc "github.com/radiospiel/jobcenter"
-    "github.com/radiospiel/jobcenter/store/postgres"
-)
+import jc "github.com/radiospiel/jobcenter"
 
 func main() {
-    st, _ := postgres.Open(os.Getenv("DATABASE_URL"))
-    eng := jc.NewEngine(st)
+    conn := jc.Connect(os.Getenv("JOBCENTER_URL")) // ConnectRPC client to the server
 
     jc.Register(Fibonacci)
     // … register the rest of this runner's workflows
 
-    eng.Run(context.Background(), jc.RunOptions{
+    jc.NewRunner(conn).Run(context.Background(), jc.RunOptions{
         Queues: []string{"default"}, // omit to serve all known queues
     })
 }
 ```
 
-`eng.Run` is the worker loop: wait for work (notification or polling deadline) → `FetchNextJob` → execute (replay) → persist result and wake the parent. `RunOptions` covers `--count`, `--queue`, and fast mode for tests.
+The worker loop: wait for work (server push or polling) → check out a job over the API → execute the workflow code (replay) → report the result. Scheduling and the `FetchNextJob` claim happen server-side; the runner only executes workflow code and exchanges jobs/results. `RunOptions` covers `--count`, `--queue`, and fast mode for tests. (The server itself is started separately: `jobcenter serve --database-url=…`.)
 
 ### Enqueuing and awaiting from clients
 
-Non-runner code uses the typed client:
+Non-runner code uses the typed client against the same server:
 
 ```go
-client, _ := jc.Dial(os.Getenv("DATABASE_URL")) // or an HTTP endpoint
+client, _ := jc.Dial(os.Getenv("JOBCENTER_URL")) // ConnectRPC client to the server
 id, _ := jc.Enqueue(ctx, client, Fibonacci, int64(10),
     jc.WithQueue("default"), jc.WithTags(map[string]string{"owner_id": "42"}))
 
 result, err := jc.AwaitJob[int64](ctx, client, id, 30*time.Second)
 ```
 
-The same operations are available over HTTP for clients that are not written in Go.
+These are the same ConnectRPC endpoints the server exposes, so clients not written in Go call them directly with protobuf or JSON.
 
 ### Testing workflows
 
@@ -429,23 +426,67 @@ The helper drives replay in-process, supports stubbing child workflows and exter
 
 ## The Jobcenter CLI
 
-`jobcenter` provides an extensive CLI. Global options include `-v/--verbose`, `-q/--quiet`, `help [subcommand]`, `top <command>` (repeatedly run a command), and `version`.
+Everything ships in a single binary, `jobcenter`. It plays two roles: it **runs the server** (`jobcenter serve`) and it is the **operator/client tool** for everything else. With the exception of `serve` and the `db:*` commands — which operate the server process and its database directly — every subcommand is a thin ConnectRPC client of a running server, addressed by `--server <url>` or the `JOBCENTER_URL` environment variable.
 
-- **Database:** `db:migrate`, `db:remigrate`.
-- **Cron:** `cron`, `cron:enqueue --cron=<n>`, `cron:disable`.
-- **Enqueue:** `enqueue [--queue --tags --count --timeout --sticky --greedy --run-in] <workflow> [args]`, `await [--queue --tags --timeout] <workflow> [args]`.
-- **Hosts:** `host:restart`, `host:shutdown`, `hosts`.
-- **Sessions:** `sessions`.
-- **Jobs:** `job:await`, `job:force`, `job:kill`, `job:resolve [--token --xref --external_system]`, `job:restart`.
-- **Logs & status:** `logs`, `ps [--limit --queue --status --age --visibility --affiliation]`, `ps:show`, `ps:failed`, `ps:latest`, `ps:result`.
-- **Registry:** `registry`, `registry:local`, `registry:show`.
-- **Run:** `run [--count --queue --fast]`, `run:all`, `run:one`, `run:heartbeat`.
+Global options apply to all commands: `-v/--verbose` (debug logging), `-q/--quiet` (warnings only), `--server <url>`, `help [subcommand]`, `top <command>` (re-run a command on an interval, e.g. `jobcenter top ps`), and `version` (prints the CLI and the server's schema version).
+
+### Server & database
+
+| Command | Purpose |
+| --- | --- |
+| `serve [--database-url …] [--addr …]` | Start the Jobcenter server (engine + store + ConnectRPC API). The only process that connects to the database. |
+| `db:migrate` | Apply pending schema migrations. |
+| `db:remigrate [--force]` | Drop and reinstall the schema (development). |
+
+### Running workers
+
+| Command | Purpose |
+| --- | --- |
+| `run [--queue …] [--count N] [--fast]` | Start a worker that connects to the server and processes jobs (forever, or `N` then exit; `--fast` shrinks backoff for tests). |
+| `run:all [--queue …]` | Process all currently-ready jobs, then exit. |
+| `run:one` | Check out and run a single job. |
+| `run:heartbeat` | Emit host heartbeats (and host metrics) so the host isn't treated as a zombie. |
+
+### Enqueuing & awaiting
+
+| Command | Purpose |
+| --- | --- |
+| `enqueue [--queue --tags --count --timeout --sticky --greedy --run-in] <workflow> [args]` | Enqueue a workflow; prints the job id. |
+| `await [--queue --tags --timeout] <workflow> [args]` | Enqueue and block until the workflow resolves, printing the result. |
+
+### Inspecting (status, logs, registry)
+
+| Command | Purpose |
+| --- | --- |
+| `ps [--limit --queue --status --age --visibility --affiliation] [search…]` | List/search jobs (backed by the search projection). |
+| `ps:show <id…>` | Show full detail for specific jobs. |
+| `ps:failed` / `ps:latest` / `ps:result <id>` | Failed jobs / most recent / a single job's result. |
+| `logs [<job_ids>…]` | Show the event log for jobs. |
+| `registry` / `registry:local` / `registry:show <name…>` | List registered workflows / those in the local process / details for specific ones. |
+
+### Job management
+
+| Command | Purpose |
+| --- | --- |
+| `job:await [--timeout] <id>` | Wait for a specific job to resolve. |
+| `job:force <id>` | Make a sleeping/scheduled job runnable now. |
+| `job:kill [--force] <id…>` | Terminate jobs. |
+| `job:restart [--force] <id…>` | Restart a failed/timed-out/resolved root job. |
+| `job:resolve [--token --xref --external_system] <result>` | Resolve an externally-managed job (testing/manual). |
+
+### Cron, hosts & sessions
+
+| Command | Purpose |
+| --- | --- |
+| `cron` / `cron:enqueue --cron=<n> [--queue --tags] <workflow> [args]` / `cron:disable <workflow> [args]` | List, enqueue, or disable cron workflows. |
+| `hosts` / `host:restart` / `host:shutdown` | List hosts; restart or gracefully shut down a host. |
+| `sessions` | List active worker sessions. |
 
 ## Ideas for future improvements
 
 Some of these are native to Jobcenter's design; others remain on the roadmap:
 
-- **Jobcenter as the main HTTP interface.** Mapping HTTP routes to workflows — with session lookup, power checks, schema validation, and enqueue — is a first-class goal, and the Go HTTP service is built for the throughput it requires.
+- **Jobcenter as the main HTTP interface.** Mapping HTTP routes to workflows — with session lookup, power checks, schema validation, and enqueue — is a first-class goal, and the ConnectRPC server is built for the throughput it requires.
 - **Hot/cold partitioning.** Only non-resolved ("hot") jobs matter for the claim query; the lean `jobs` table plus partitioning on a "cold" flag keeps claim performance flat as cold history grows.
 - **Sharding.** Disjoint id ranges per shard let independent Jobcenter servers run share-nothing while keeping ids globally unique for cross-shard analysis.
 - **Lean workflows.** When a whole workflow is available in the current process, run it in-process and only write summary job/events rows — avoiding round-trips for trivial workflows.
