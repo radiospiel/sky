@@ -35,8 +35,8 @@ var Fibonacci = jobcenter.NewWorkflow("Fibonacci", "1.0",
         }
         f1 := jobcenter.Async(ctx, Fibonacci, &pb.FibReq{N: req.N - 2})
         f2 := jobcenter.Async(ctx, Fibonacci, &pb.FibReq{N: req.N - 1})
-        a, _ := f1.Await(ctx)
-        b, _ := f2.Await(ctx)
+        a := f1.Await(ctx)
+        b := f2.Await(ctx)
         return a + b, nil
     })
 ```
@@ -147,7 +147,7 @@ The Go SDK provides the primitives used inside workflows.
 
 ### await
 
-`Await` resolves a child job. If the child is `ok` it returns the (decoded) result; if `failed` it returns the child's error; if `timeout` it returns a timeout error. If the child is not yet resolved, the engine suspends the current job (sets it to `sleep`) and re-runs it later. Awaiting child jobs one by one has overhead — each `Await` suspends the runner — so start independent children with `Async` first and then await them, or use `Await(ctx, All)` to wait for every outstanding child at once before collecting results.
+`Await` resolves a child job and returns its result **directly** (no error tuple). If the child is `ok` it returns the decoded result; if the child `failed` or timed out, `Await` **panics** with the child's error; if the child is not yet resolved, it raises the pending signal so the engine suspends the current job (sets it to `sleep`) and re-runs it later. Both the failure and pending cases are panics recovered by the runner (see [Control flow](#control-flow-the-pending-signal)). Awaiting child jobs one by one has overhead — each `Await` suspends the runner — so start independent children with `Async` first and then await them, or use `Await(ctx, All)` to wait for every outstanding child at once before collecting results.
 
 ### asleep(duration)
 
@@ -338,21 +338,27 @@ func Register[Req, Resp any](wf *Workflow[Req, Resp])
 // start a child, get a typed future back (does not block)
 func Async[Req, Resp any](ctx *WfContext, wf *Workflow[Req, Resp], req Req, opts ...Opt) *Future[Resp]
 
-// resolve a future: returns the memoized result, or suspends the job
-func (f *Future[Resp]) Await(ctx *WfContext) (Resp, error)
+// resolve a future: returns the result directly.
+// panics on child failure or to signal "pending" — both recovered by the runner.
+func (f *Future[Resp]) Await(ctx *WfContext) Resp
 
-// convenience: Async then Await
-func Call[Req, Resp any](ctx *WfContext, wf *Workflow[Req, Resp], req Req, opts ...Opt) (Resp, error)
+// convenience: Async then Await (same panic-on-error contract)
+func Call[Req, Resp any](ctx *WfContext, wf *Workflow[Req, Resp], req Req, opts ...Opt) Resp
 
 // wait for every outstanding child before collecting results
 func Await(ctx *WfContext, sel Selector) error // Selector == All
 ```
 
-`Async`/`Await` look up the child by `(parent_id, args_hash)`. A resolved child returns its decoded result (memoized); a missing child is enqueued; an unresolved child suspends the parent.
+`Async`/`Await` look up the child by `(parent_id, args_hash)`. A resolved child returns its decoded result (memoized); a missing child is enqueued; an unresolved child suspends the parent (pending signal); a `failed`/`timeout` child panics with its error.
 
 ### Control flow: the pending signal
 
-When a child is unresolved, `Await` raises an internal **pending signal** (`panic` recovered by the runner), which suspends the job and lets workflow bodies read linearly — no `if err == ErrPending { return }` after every call. The public `(Resp, error)` return is reserved for *real* workflow errors, which the engine classifies as recoverable (`err`, retried with backoff) or non-recoverable (`failed`). The panic/recover is entirely hidden inside the engine; workflow authors only need to remember the replay footguns above (no once-only `defer`, no host-local state across `Await`).
+`Await` never returns an error — it returns the child's result directly and **panics** in the two non-success cases, both of which the runner recovers:
+
+- **pending** — the child isn't resolved yet; the runner sets the job to `sleep` and re-runs it later.
+- **child failure** — the child resolved as `failed`/`timeout`; the panic carries the child's error, and the runner fails the current job (classifying recoverable `err`, retried with backoff, vs non-recoverable `failed`).
+
+This keeps workflow bodies linear — `a := f1.Await(ctx); b := f2.Await(ctx); return a + b` — with no error checks after every call. A workflow reports its *own* failure through the `(Resp, error)` return of its `Fn`; a child's failure propagates automatically via the panic (a workflow that wants to handle one can `recover`, but that is rare). The panic/recover machinery is entirely hidden inside the engine; workflow authors only need to remember the replay footguns above (no once-only `defer`, no host-local state across `Await`).
 
 ### Protobuf, codegen, and JSON-schema validation
 
