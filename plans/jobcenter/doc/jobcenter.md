@@ -1,12 +1,12 @@
 # Jobcenter
 
-Jobcenter is a Go reimplementation of [`postjob`](https://github.com/mediafellows/postjob): a restartable, asynchronous, distributed workflow engine. It keeps postjob's defining idea — workflows written as ordinary code, made durable by replay — while moving all orchestration out of the database and into Go, exposing a typed Go SDK and an HTTP service. This document describes the features of the Jobcenter service and how applications integrate with it.
+Jobcenter is a restartable, asynchronous, distributed workflow engine: business processes written as ordinary code, made durable by replay. This document describes the features of the Jobcenter service and how applications integrate with it.
 
-> This document mirrors the structure of the original *Postjob Book*. Where postjob implements logic in PL/pgSQL, Jobcenter implements it in Go; where postjob offers a Ruby DSL, Jobcenter offers a typed Go SDK. The companion design docs in [`../`](../README.md) cover the architecture, data model, store interface, engine, and roadmap in more detail.
+> **Motivation.** Jobcenter grows out of [`postjob`](https://github.com/mediafellows/postjob), a Ruby + PostgreSQL workflow engine, and keeps its core idea — replay-based orchestration. It differs in two deliberate ways: all orchestration logic lives in the application (starting with Go) rather than in the database, and the database is reduced to two special capabilities plus plain storage. The remainder of this document describes Jobcenter on its own terms. The companion design docs in [`../`](../README.md) cover the architecture, data model, store interface, engine, and roadmap.
 
 ## What is Jobcenter
 
-On a basic level Jobcenter acts as a job queue, but — like postjob — it is much more, offering the features of a workflow engine with deep integration into a host language. **Jobcenter is not limited to Go: Go is simply the first host language.** The engine, the replay model, the protobuf payload format, and the HTTP runner interface are all language-agnostic; a runner in any language only needs to speak the runner interface and exchange proto payloads, so additional host-language SDKs (e.g. Elixir, Ruby) can be added later. Go is the first such SDK, and the rest of this document uses it for examples.
+On a basic level Jobcenter acts as a job queue, but it is much more, offering the features of a workflow engine with deep integration into a host language. **Jobcenter is not limited to Go: Go is simply the first host language.** The engine, the replay model, the protobuf payload format, and the HTTP runner interface are all language-agnostic; a runner in any language only needs to speak the runner interface and exchange proto payloads, so additional host-language SDKs (e.g. Elixir, Ruby) can be added later. Go is the first such SDK, and the rest of this document uses it for examples.
 
 ### Jobcenter as a job queue
 
@@ -18,7 +18,7 @@ A workflow in Jobcenter is *structured*: it is plain Go code and can use any con
 
 ## A working workflow
 
-Terminology (unchanged from postjob):
+Terminology:
 
 - **workflow implementation** — code that describes the steps of a business process.
 - **workflow instance** — a running instance, created by *enqueuing* the workflow.
@@ -55,7 +55,7 @@ A runner pulls a ready job from the `default` queue, finds it must call `Fibonac
 
 ### But how does that really work?
 
-The full story is replay (the same mechanism postjob uses, reimplemented in Go):
+The full story is replay:
 
 1. A `Fibonacci` job with `n = 3` is enqueued and becomes `ready`.
 2. A runner claims it and runs the function from the top until the first `Await`.
@@ -70,14 +70,14 @@ This combination of engine logic (enabling/disabling jobs based on whether unfin
 
 ### Be aware, though, that…
 
-The replay model has the same footguns as postjob, now expressed in Go terms:
+The replay model comes with some footguns:
 
 - Because an unresolved `Await` unwinds the current execution (Jobcenter uses an internal `panic`/`recover` signal, not a returned error), any `defer` blocks in a workflow body will run on every suspension. Do not rely on `defer` for cleanup that must happen once, and never hold process-local resources (temp files, open handles) across an `Await`.
 - A child job is identified solely by its parent, workflow name, and arguments. Two identical `Await` calls collapse into one memoized child. To force two distinct effects, vary the arguments (e.g. add a discriminator field).
 
 ## Job Statuses
 
-A job can be in one of the following statuses (identical to postjob):
+A job can be in one of the following statuses:
 
 | Status | Meaning |
 | --- | --- |
@@ -92,7 +92,7 @@ A job can be in one of the following statuses (identical to postjob):
 
 ## The Jobcenter server
 
-Like postjob, Jobcenter stores job data in a database (PostgreSQL by default). **Unlike** postjob, the orchestration logic is *not* implemented in the database. postjob's book itself anticipated this: *"A future Postjob reimplementation would probably separate data storage and workflow logic into two distinct packages, with data being stored inside Postgres, and logic provided as a Go or Elixir package."* Jobcenter is exactly that separation.
+Jobcenter stores job data in a database (PostgreSQL by default) but keeps all orchestration logic in the application, not the database. This separation — dumb store, smart engine — is the central architectural choice.
 
 The database provides **exactly two special capabilities**:
 
@@ -124,7 +124,7 @@ A Jobcenter system consists of:
 
 ### Database migrations
 
-Schema is managed with plain, idempotent SQL migrations under `store/postgres/migrations/`. Crucially, these migrations carry **only** tables and indexes — no PL/pgSQL orchestration functions or triggers, since that behaviour now lives in the engine. Apply them with:
+Schema is managed with plain, idempotent SQL migrations under `store/postgres/migrations/`. Crucially, these migrations carry **only** tables and indexes — no orchestration functions or triggers, since that behaviour lives in the engine. Apply them with:
 
 ```
 jobcenter db:migrate      # update to latest schema
@@ -139,7 +139,7 @@ A runner is a Go program that imports the Jobcenter SDK, registers its workflows
 
 ## The Workflow SDK
 
-The Go SDK provides the primitives used inside workflows. They mirror postjob's Ruby DSL.
+The Go SDK provides the primitives used inside workflows.
 
 ### async
 
@@ -163,7 +163,7 @@ To parallelize, put each unit of work into its own child job started with `Async
 
 ### Unit-testing workflows
 
-The SDK ships a test helper that runs a workflow to completion in-process against an in-memory or throwaway store, drives replay deterministically, and lets you stub child workflows and external services. This mirrors postjob's `SpecHelper` and supports the same patterns: testing against fake external services, and stubbing sub-workflows so a unit test exercises one workflow in isolation.
+The SDK ships a test helper that runs a workflow to completion in-process against an in-memory or throwaway store, drives replay deterministically, and lets you stub child workflows and external services — so a unit test can exercise one workflow in isolation, with fakes for everything it calls out to.
 
 ### Using Jobcenter from non-runners
 
@@ -176,7 +176,7 @@ Client code that only enqueues or inspects workflows (not a runner) connects, en
 
 ## Jobcenter data structures
 
-postjob keeps everything on one wide `postjobs` table. Jobcenter **splits the hot path from search** (principle 7):
+Jobcenter **splits the hot path from search** (principle 7):
 
 ### Job data
 
@@ -211,7 +211,7 @@ The `events` table records the lifecycle of every job and host. It powers `jobce
 
 ### How Jobcenter picks a job to run
 
-When a runner asks for work, the engine computes a **claim filter** (in Go) and the store atomically returns the single best match. A job is eligible when: it is `ready` (or `err` and due); its workflow is served by the runner; its `next_run_at` is in the past; it is not sticky to a different host; and no greedy job is already running on the host. Ties are broken by oldest `next_run_at`. The store uses `SELECT … FOR UPDATE SKIP LOCKED LIMIT 1` so a job is claimed exactly once without runners blocking on a table lock. This replaces postjob's `_upcoming_runnable_job` PL/pgSQL function: the **policy** (sticky/greedy/queue/workflow constraints) is decided in Go and passed to `FetchNextJob`; the SQL is pure mechanism.
+When a runner asks for work, the engine computes a **claim filter** (in Go) and the store atomically returns the single best match. A job is eligible when: it is `ready` (or `err` and due); its workflow is served by the runner; its `next_run_at` is in the past; it is not sticky to a different host; and no greedy job is already running on the host. Ties are broken by oldest `next_run_at`. The store uses `SELECT … FOR UPDATE SKIP LOCKED LIMIT 1` so a job is claimed exactly once without runners blocking on a table lock. The **policy** (sticky/greedy/queue/workflow constraints) is decided in the engine and passed to `FetchNextJob`; the SQL is pure mechanism.
 
 ### Heartbeats
 
@@ -231,15 +231,15 @@ A job may need to be resolved by another system or by user input. Jobcenter and 
 
 ### Stock workflows
 
-Jobcenter ships a few generally useful built-in workflows available on every runner — for example running an external command or making an HTTP request. (As in postjob, a "run any command" workflow is powerful and a security trade-off; it is opt-in.)
+Jobcenter ships a few generally useful built-in workflows available on every runner — for example running an external command or making an HTTP request. A "run any command" workflow is powerful and a security trade-off, so it is opt-in.
 
 ### Postprocessing
 
-A workflow may define cleanup hooks (`cleanup`, `cleanup_on_failure`, `cleanup_on_success`) that the engine enqueues as standalone root jobs after the workflow's main method resolves. This replaces postjob's `_after_job_completed` trigger logic with an engine after-completion hook.
+A workflow may define cleanup hooks (`cleanup`, `cleanup_on_failure`, `cleanup_on_success`) that the engine enqueues as standalone root jobs after the workflow's main method resolves, via an after-completion hook in the engine.
 
 ### Queue support
 
-A queue organizes workflows and jobs and is the unit of autoscaling. A job's queue comes from the `Enqueue` call, falling back to the workflow's registered queue, then a default. By default a child job inherits its parent's queue, but `Async`/`Await` accept a `queue:` option. A runner can be restricted to specific queues (`jobcenter run --queue=foo,bar`); by default it serves all queues for workflows it knows. As in postjob, the queue mapping lives in the clients/runners — they must agree on which queue serves which workflow.
+A queue organizes workflows and jobs and is the unit of autoscaling. A job's queue comes from the `Enqueue` call, falling back to the workflow's registered queue, then a default. By default a child job inherits its parent's queue, but `Async`/`Await` accept a `queue:` option. A runner can be restricted to specific queues (`jobcenter run --queue=foo,bar`); by default it serves all queues for workflows it knows. The queue mapping lives in the clients/runners — they must agree on which queue serves which workflow.
 
 ### Shutting down a host
 
@@ -273,7 +273,7 @@ A job that errors is rescheduled after `backoff_basetime * 1.5^failed_attempts`,
 
 ### Workflow main methods
 
-A workflow exposes one public entry point. In the Go SDK this is the typed function registered with the workflow; the protobuf request message defines its arguments (replacing postjob's `run` vs `call` argument-shape juggling).
+A workflow exposes one public entry point. In the Go SDK this is the typed function registered with the workflow; the protobuf request message defines its arguments.
 
 ### Visibility
 
@@ -281,7 +281,7 @@ Jobs carry a visibility level so listings can be filtered: root jobs (initiated 
 
 ### cron jobs
 
-A cron workflow is automatically re-enqueued after each completion. Register it with `cron: <seconds>` and enqueue it once (`jobcenter cron:enqueue --cron=300 …`); the interval is the gap between one run resolving and the next starting. Cron jobs are unique per name+arguments, enforced by the engine; disable with `jobcenter cron:disable`. This replaces postjob's `_restart_cronjob` trigger.
+A cron workflow is automatically re-enqueued after each completion. Register it with `cron: <seconds>` and enqueue it once (`jobcenter cron:enqueue --cron=300 …`); the interval is the gap between one run resolving and the next starting. Cron jobs are unique per name+arguments, enforced by the engine; disable with `jobcenter cron:disable`.
 
 ## Autoscaling support
 
@@ -293,15 +293,15 @@ Jobcenter exposes the queue-load signals needed for autoscaling: when a queue ha
 
 ## Jobcenter as an integration layer
 
-This mirrors postjob's "Postjob in Mediastore" chapter: how applications integrate with the service.
+How applications integrate with the service.
 
 ### HTTP enqueue and query
 
-Applications integrate primarily over HTTP. A slim wrapper around `Enqueue` adds, per request: session lookup, authorization, optional workflow-name resolution (tenant-specific implementations with a base fallback), optional context building, and automatic tagging (e.g. `owner_id`, `affiliation_id`). Queries and status fetches honor those tags so one tenant cannot read another's workflows. Endpoints mirror the existing surface: `POST /workflows`, `GET /jobs/{id}`, `GET /jobs/{id}/await`, `GET /jobs`, and the external-resolution endpoints. See [HTTP & CLI](../05-http-and-cli.md).
+Applications integrate primarily over HTTP. A slim wrapper around `Enqueue` adds, per request: session lookup, authorization, optional workflow-name resolution (tenant-specific implementations with a base fallback), optional context building, and automatic tagging (e.g. `owner_id`, `affiliation_id`). Queries and status fetches honor those tags so one tenant cannot read another's workflows. The endpoints are `POST /workflows`, `GET /jobs/{id}`, `GET /jobs/{id}/await`, `GET /jobs`, and the external-resolution endpoints. See [HTTP & CLI](../05-http-and-cli.md).
 
 ### Workflow name resolution
 
-As in postjob/JC, an unqualified workflow name can resolve to a tenant-specific implementation (`Workflow::<Tenant>::Name`) and fall back to a base implementation (`Workflow::Base::Name`). This is an application-level feature layered on Jobcenter's registry.
+An unqualified workflow name can resolve to a tenant-specific implementation (`Workflow::<Tenant>::Name`) and fall back to a base implementation (`Workflow::Base::Name`). This is an application-level feature layered on Jobcenter's registry.
 
 ### Job contexts
 
@@ -330,7 +330,7 @@ func NewWorkflow[Req, Resp proto.Message](name, version string, fn func(*WfConte
 func Register[Req, Resp proto.Message](wf *Workflow[Req, Resp])
 ```
 
-`Req`/`Resp` are generated from `.proto` definitions. Their serialized bytes are the authoritative `args_proto`/`result_proto` stored in the `jobs` table, replacing postjob's JSON encoder. Registration records the name, version, and options in the `registry` table.
+`Req`/`Resp` are generated from `.proto` definitions. Their serialized bytes are the authoritative `args_proto`/`result_proto` stored in the `jobs` table. Registration records the name, version, and options in the `registry` table.
 
 ### Spawning and awaiting children
 
@@ -357,7 +357,7 @@ When a child is unresolved, `Await` raises an internal **pending signal** (`pani
 ### Protobuf, codegen, and JSON-schema validation
 
 - **One source of truth.** A `buf`/protoc plugin reads a proto `service` definition and generates both the typed workflow stub *and* the HTTP handler, so the wire contract and the Go API never drift.
-- **Optional JSON-schema validation.** A workflow may declare a JSON schema (sidecar file or embedded); the schema is stored in the registry so every participant can validate a payload before enqueue and before result storage, even without the implementation. This reinstates postjob's removed JSON-schema feature on top of proto's structural typing.
+- **Optional JSON-schema validation.** A workflow may declare a JSON schema (sidecar file or embedded); the schema is stored in the registry so every participant can validate a payload before enqueue and before result storage, even without the implementation — an extra layer on top of proto's structural typing.
 
 ### The in-workflow primitives
 
@@ -408,11 +408,11 @@ func TestFibonacci(t *testing.T) {
 }
 ```
 
-The helper drives replay in-process, supports stubbing child workflows and external services, and runs against a throwaway store — mirroring postjob's `SpecHelper`.
+The helper drives replay in-process, supports stubbing child workflows and external services, and runs against a throwaway store.
 
 ## The Jobcenter CLI
 
-`jobcenter` provides an extensive CLI mirroring postjob's. Global options include `-v/--verbose`, `-q/--quiet`, `help [subcommand]`, `top <command>` (repeatedly run a command), and `version`.
+`jobcenter` provides an extensive CLI. Global options include `-v/--verbose`, `-q/--quiet`, `help [subcommand]`, `top <command>` (repeatedly run a command), and `version`.
 
 - **Database:** `db:migrate`, `db:remigrate`.
 - **Cron:** `cron`, `cron:enqueue --cron=<n>`, `cron:disable`.
@@ -426,9 +426,9 @@ The helper drives replay in-process, supports stubbing child workflows and exter
 
 ## Ideas for future improvements
 
-Several postjob "future ideas" are either native to Jobcenter's design or remain on the roadmap:
+Some of these are native to Jobcenter's design; others remain on the roadmap:
 
-- **Jobcenter as the main HTTP interface.** Mapping HTTP routes to workflows — with session lookup, power checks, schema validation, and enqueue — is a first-class goal here; the Go HTTP service makes the performance argument postjob anticipated.
+- **Jobcenter as the main HTTP interface.** Mapping HTTP routes to workflows — with session lookup, power checks, schema validation, and enqueue — is a first-class goal, and the Go HTTP service is built for the throughput it requires.
 - **Hot/cold partitioning.** Only non-resolved ("hot") jobs matter for the claim query; the lean `jobs` table plus partitioning on a "cold" flag keeps claim performance flat as cold history grows.
 - **Sharding.** Disjoint id ranges per shard let independent Jobcenter servers run share-nothing while keeping ids globally unique for cross-shard analysis.
 - **Lean workflows.** When a whole workflow is available in the current process, run it in-process and only write summary job/events rows — avoiding round-trips for trivial workflows.
