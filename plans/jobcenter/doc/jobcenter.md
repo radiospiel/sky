@@ -170,12 +170,13 @@ The SDK ships a test helper that runs a workflow to completion in-process agains
 
 ### Using Jobcenter from non-runners
 
-Client code that only enqueues or inspects workflows (not a runner) connects, enqueues, optionally processes, and awaits results — via the SDK client or the HTTP API:
+A non-runner client only *submits and observes* work — it cannot process jobs, because processing means executing workflow code, which only a worker does. Such a client connects to a server and:
 
-- **Connect** to a Jobcenter database or HTTP endpoint.
-- **Enqueue** a workflow (`Enqueue`), returning a job id.
-- **Process** queues inline for scripts/tests (`ProcessAll`).
-- **Await** a specific job id with a time limit.
+- **Connects** to a Jobcenter server (ConnectRPC endpoint).
+- **Enqueues** a workflow (`Enqueue`), returning a job id.
+- **Awaits** a specific job id with a time limit, or **inspects** status/results (`ps`-style queries).
+
+Actually running the enqueued work requires at least one worker connected to the same server. (For scripts and tests that want to drive a workflow to completion in one process, use the test helper above or run an in-process worker — but that process is then acting as a worker, not a pure client.)
 
 ## Jobcenter data structures
 
